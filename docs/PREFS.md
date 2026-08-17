@@ -49,8 +49,19 @@ Every entry also carries `enabled` (the tick box) and `flag` (`'ok'` or `'idlike
 classifier). **There is no cookie kind, deliberately** — see CLAUDE.md for why, and do not
 add one.
 
-Migration: a v1 rule (bare `steps`) is rewritten to `{v:2, clicks:{steps:…}}` on read. Keep
-the migration for a long time; rules are hand-taught and expensive to lose.
+`ss` is the weakest of the four and it is worth saying so, since it was listed above with no
+argument attached. Unlike `ls`, sessionStorage dies with the tab whatever the container does —
+so replaying it is not restoring something the container destroyed, it is manufacturing a
+resumed session that never existed. It survives the counterfactual test anyway (you would have
+dismissed that session-scoped banner by hand in every fresh tab) and it shares the `ls` code
+path entirely, so it is nearly free. Drop it the moment it costs anything.
+
+**There is no migration, and no v1 read path. Corrected 2026-08-17.** This section used to say
+a v1 rule (bare `steps`) is rewritten on read, and to "keep the migration for a long time; rules
+are hand-taught and expensive to lose". The premise was wrong — the user settled it: *"there is
+no need to keep any of it. It takes about 5 seconds to recreate it."* The keys move `gs_*` →
+`fmn_*`, the old ones are deleted once on first run, and anything taught before that is
+re-taught. Write the shape clean rather than carrying a compatibility path nobody needs.
 
 ## Capture — "Remember this site"
 
@@ -85,9 +96,21 @@ t=30s is in the baseline, because the user had not touched anything yet.
 Residual: a site that changes something on its own *after* the user's first interaction will
 have that land in the diff. Unavoidable, and what the review step is for.
 
+### What the snapshot covers
+
+Settled 2026-08-17: the class list and **all** attributes of `:root` and `body`, plus the
+complete localStorage and sessionStorage key/value maps. Capture is **top frame only** — the
+menu commands are already gated on `isTop` — while replay is per frame. That asymmetry is
+intended: a frame gets the rule for its own host, or it gets nothing.
+
 ### Review
 
 The diff is presented as a list. Nothing is saved until confirmed.
+
+**One panel, built once, shown in two places** (settled 2026-08-17): immediately after
+"Remember this site" with the diff pre-ticked, and re-openable per host from Settings. Both are
+needed — the decision wants the context you have at capture time, but the trim-until-it-breaks
+workflow below is impossible if review only ever happens once. Do not build two UIs.
 
 **The question this UI asks is "which of these did you mean to set?"** — not "which of these
 look risky?". That framing is load-bearing, not cosmetic. The diff necessarily mixes
@@ -161,10 +184,16 @@ theme, from first paint, with nothing sent.
 
 ## Build order
 
-1. Schema v2 + migration, no behaviour change. Ship and confirm existing rules survive.
-2. Settled baseline + capture + review UI.
-3. Replay + re-assertion + trace lines.
-4. The four fixtures.
+**Corrected 2026-08-17 — the fixtures used to sit at step 4 here, which contradicted
+`../HANDOFF.md` M2 in the same package.** Fixtures-first wins, and the reason is the one
+HANDOFF gives: four versions of this project were burned on never having stated precisely what
+"working" means. The four pages describe *site* behaviour, so none of them needs the storage
+shape or any pref code to exist first.
+
+1. Schema v2 + `fmn_*` keys, no behaviour change, no migration.
+2. **The four fixtures**, before any pref code is written.
+3. Rolling baseline + capture + review panel.
+4. Replay + re-assertion + trace lines.
 5. Wikipedia.
 
 ## Open, deliberately deferred

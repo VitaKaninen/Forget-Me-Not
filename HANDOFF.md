@@ -17,19 +17,22 @@ re-litigation, unless it says otherwise.
 - **The design for the new subsystem is written**: `docs/PREFS.md`. It is complete enough to
   build from.
 
-## Step 0 — the rename. ✅ DONE 2026-08-17 (local); steps 5–7 are the user's.
+## Step 0 — the rename. ✅ DONE 2026-08-17.
 
-Local rename is complete and committed as v0.8.0. What actually happened, and what is left:
+Local rename is complete and committed as v0.8.0. What actually happened:
 
 - Steps 1–4 done. The folder move was done by moving `GateSkip`'s **contents** (including
   `.git`) into the already-existing `Forget-Me-Not` folder, not by renaming the directory —
   the new folder already held a copy of this file and was a live session's cwd. History is
   intact; `git log` still reaches v0.2.0.
-- **Step 5 (create the GitHub repo, `remote set-url`, push) has NOT been done.** `origin`
-  still points at `VitaKaninen/GateSkip`, so `@updateURL` currently 404s — harmless, but
-  nothing auto-updates until the repo exists.
-- Steps 6 and 7 (remove the old script from Violentmonkey before installing the new one;
-  delete the old repo and gist) remain the user's, in that order.
+- **Step 5 done.** Verified 2026-08-17: `origin` is `VitaKaninen/Forget-Me-Not.git`, `main`
+  is pushed and in sync, and the `@updateURL` raw URL returns 200.
+- **Step 7 done** for the repo — `VitaKaninen/GateSkip` no longer resolves. The gist is
+  unverified from here.
+- **Step 6 is unverified from here** — whether the old GateSkip script is uninstalled from
+  Violentmonkey can only be checked in the browser. Both `@match *://*/*`; two copies
+  running at once is the "two userscripts fighting over the same click" hazard in
+  `../CLAUDE.md`.
 - One judgement call beyond the written plan: `TAG = '__gateskip__'` → `'__forgetmenot__'`.
   It is the cross-frame postMessage discriminator, ephemeral and never persisted, so it is
   not in the same class as the `gs_*` keys below. The one way it can bite is an old and a
@@ -88,15 +91,31 @@ The trace replaced it in practice — v0.7.0 was diagnosed entirely from trace p
 debug never switched on. Do not build a new subsystem on top of code slated for deletion.
 Keep the trace; keep the `performClick` split.
 
-**M1 — Schema v2 + migration, no behaviour change.** `gs_rules` becomes
-`{v:2, clicks:{steps,…}, prefs:{…}}`; see `docs/PREFS.md` for the shape. Rename the storage
-keys in the same pass. Ship it and confirm the user's taught rules survive a real browser
-restart before anything else touches storage.
+**M1 — Schema v2, new key names, NO migration.** `fmn_rules` holds
+`{v:2, clicks:{steps,…}, prefs:{…}}`; see `docs/PREFS.md` for the shape. The `gs_*` keys become
+`fmn_*` in the same pass, and the old ones are deleted once on first run.
+
+**There is deliberately no v1→v2 migration, and no back-compat read path.** An earlier draft of
+this plan (and of `docs/PREFS.md`) said to keep one "for a long time; rules are hand-taught and
+expensive to lose". The user settled it 2026-08-17: *"there is no need to keep any of it. It
+takes about 5 seconds to recreate it."* Re-teaching is cheaper than carrying a compatibility
+path forever, so the shape is written clean. This also retires the gate that used to sit here —
+"ship it and confirm the user's taught rules survive a browser restart" — because there is
+nothing left to survive.
+
+Not renamed, on purpose: the DOM ids `gs-popup` / `gs-settings` / `gs-hud` and `__gsMenu` in
+`tests/gm-shim.js`. They are internal, nothing persists them, and churning them adds diff noise
+to exactly the milestones where a regression has to stay attributable.
 
 **M2 — Write the four fixtures before the feature exists.** `fixture-pref-ls`,
 `-dom`, `-hostile`, `-noise`, specified in `docs/PREFS.md`. This ordering is deliberate: four
 versions of this project were burned on never having stated precisely what "working" means, and
-a fixture is the cheapest way to state it.
+a fixture is the cheapest way to state it. They are plain HTML pages describing *site*
+behaviour, so none of them depends on the storage shape or on any pref code existing.
+
+**Confirmed 2026-08-17.** `docs/PREFS.md`'s own "Build order" used to list the fixtures at step
+4, after capture and replay — a direct contradiction of this milestone, in the same package.
+Fixtures-first wins; PREFS has been corrected.
 
 **M3 — Rolling baseline + "Remember this site" capture + review UI.**
 
@@ -118,6 +137,27 @@ paint, with nothing transmitted.
   seam clean. One script, hard internal boundary.
 - GM storage is **not** partitioned per container (confirmed by the user), which is what makes
   any of this possible.
+
+Settled 2026-08-17, third session — these filled real gaps in the design, they are not restatements:
+
+- **The review list is ONE panel, built once, shown in two places.** It appears immediately
+  after "Remember this site" with the diff pre-ticked, and is re-openable per host from
+  Settings. Both are required: the decision needs the context you have at capture time, but
+  `docs/PREFS.md` also makes trimming a hard requirement ("unticking and re-testing must be one
+  click", because the workflow is to trim until it stops working and step back one), and that is
+  impossible if review only ever happens once. Do not build two separate UIs for this.
+- **The baseline snapshot covers**: the class list and all attributes of `:root` and `body`,
+  plus the complete localStorage and sessionStorage key/value maps. Capture is **top frame
+  only** (the menu commands are already gated on `isTop`); replay is **per frame**. That
+  asymmetry is intended — a frame gets the rule for its own host, or no rule.
+- **The `ss` entry kind stays in v1.** It is worth writing down that it is the weakest of the
+  four, because `docs/PREFS.md` lists it with no argument attached: unlike `ls`, sessionStorage
+  dies with the tab whatever the container does, so replay is not restoring something the
+  container destroyed — it is creating a resumed session that never existed. It survives on the
+  counterfactual test anyway (you would have dismissed that session-scoped banner by hand in
+  every fresh tab) and it shares the `ls` code path entirely, so it is close to free. Drop it
+  without hesitation if it ever costs anything.
+- **`gs_on` (→ `fmn_on`) off means BOTH halves off**, clicks and replay alike. One switch.
 
 ## Standing lessons that keep paying off
 
