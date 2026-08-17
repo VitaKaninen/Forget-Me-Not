@@ -56,6 +56,25 @@ were reading — so teaching it once fixes every site that embeds the same playe
 
 Nothing appears on the page during normal browsing.
 
+## Debug mode
+
+**GateSkip: debug mode on/off** in the menu (or the red tickbox in Settings). It answers the
+one question the script is otherwise structurally unable to answer: when a gate does not
+appear on a later visit, was it dismissed, or was it never shown?
+
+With it on:
+
+- Every element GateSkip is about to click gets a **thick pulsing marker and a label**
+  naming the step, and is scrolled into view. It then **waits five seconds** before
+  clicking, so you can see what it picked and whether that is right.
+- A **panel at the bottom left** narrates every decision in the top frame, including the
+  negatives — "no rule for this host", "armed for X, watching 10s", "watch window ended and
+  step 1 NEVER MATCHED". Lines from an embedded frame are prefixed `⧉ <host>:`. Everything
+  also goes to the console, which survives the navigation a closing gate often triggers.
+- If the target vanishes mid-countdown, the click is **cancelled**, not fired late.
+
+Turning it off mid-countdown cancels the pending click; the next tick clicks normally.
+
 ## Behaviour worth knowing
 
 - **Watching is bounded.** Ten seconds per navigation, then it stops. On a single-page app

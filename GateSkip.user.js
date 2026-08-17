@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        GateSkip
 // @namespace   https://github.com/VitaKaninen
-// @version     0.1.0
+// @version     0.2.0
 // @author      VitaKaninen
 // @description Teach it, once, how a site's "are you over 18" gate is dismissed — then it does that for you on every later visit. Nothing is guessed and nothing fires until you have taught it.
 // @match       *://*/*
@@ -30,12 +30,14 @@
     const ON_KEY = 'gs_on';           // GM: false to switch the whole thing off
     const WATCH_KEY = 'gs_watch';     // GM: default watch window, ms
     const LOG_KEY = 'gs_log';         // GM: [{ t, host, m }] — newest first, capped
+    const DEBUG_KEY = 'gs_debug';     // GM: true to narrate + delay every click
     const TEACH_KEY = 'gs_teach';     // sessionStorage (top frame): teaching in progress
 
     const WATCH_DEFAULT = 10000;      // how long after a load/navigation to keep looking
     const SETTLE_MS = 150;            // pause after a click before hunting the next step
     const MAX_RESTARTS = 2;           // re-runs allowed when the page replaces the gate
     const LOG_MAX = 120;
+    const DEBUG_DELAY = 5000;         // debug mode: how long to show the target first
 
     // Rule shape:
     //   { host, subdomains, enabled, watchMs, steps: [Step], created, lastFired, fires }
@@ -59,6 +61,7 @@
     const getRules = () => readJson(RULES_KEY, {});
     const saveRules = (r) => writeJson(RULES_KEY, r);
     const isOn = () => GM_getValue(ON_KEY, true) !== false;
+    const isDebug = () => GM_getValue(DEBUG_KEY, false) === true;
     const watchDefault = () => {
         const n = parseInt(GM_getValue(WATCH_KEY, WATCH_DEFAULT), 10);
         return (n > 0 && n <= 120000) ? n : WATCH_DEFAULT;
@@ -313,7 +316,33 @@
         if (!run) return;
         try { if (run.obs) run.obs.disconnect(); } catch (_) {}
         try { if (run.timer) clearInterval(run.timer); } catch (_) {}
+        if (run.debug) hlClear();
         run = null;
+    }
+
+    // The click itself, split out so debug mode can put a five second gap in front of it
+    // without duplicating the bookkeeping that has to follow it.
+    function performClick(el, now) {
+        realClick(el);
+        run.clicked.push(el);
+        run.idx++;
+        run.settleUntil = now + SETTLE_MS;
+        dbg('clicked step ' + run.idx + ' of ' + run.rule.steps.length);
+
+        if (run.idx >= run.rule.steps.length) {
+            run.done = true;
+            const rules = getRules();
+            if (rules[run.key]) {
+                rules[run.key].lastFired = Date.now();
+                rules[run.key].fires = (rules[run.key].fires || 0) + 1;
+                saveRules(rules);
+            }
+            log('dismissed the gate (' + run.rule.steps.length +
+                (run.rule.steps.length === 1 ? ' click)' : ' clicks)'));
+            dbg('sequence complete — still watching until the window ends, in case the page puts the gate back');
+            // Not disarmed — the window stays open for the re-render case below. The
+            // deadline is what ends it.
+        }
     }
 
     function tick() {
@@ -323,6 +352,35 @@
         if (!run || teaching || recording) return;
         const now = Date.now();
         if (now < run.settleUntil) return;
+
+        // Debug mode: a click is already lined up and being shown. Nothing else may
+        // happen until it fires or its target goes away — re-hunting mid-countdown would
+        // move the marker off the thing the countdown is about.
+        if (run.pending) {
+            const p = run.pending;
+            if (!p.el.isConnected || !isVisible(p.el)) {
+                dbg('target for step ' + (run.idx + 1) + ' disappeared during the countdown — not clicking, looking again');
+                hlClear();
+                run.pending = null;
+                return;
+            }
+            const left = p.at - now;
+            if (left > 0) {
+                const secs = Math.ceil(left / 1000);
+                if (secs !== p.shown) {
+                    p.shown = secs;
+                    p.hl.setLabel(p.head + ' — clicking in ' + secs + 's');
+                }
+                return;
+            }
+            p.hl.setColor('#a6e3a1');
+            p.hl.stopPulse();
+            p.hl.setLabel(p.head + ' — CLICKED');
+            run.pending = null;
+            performClick(p.el, now);
+            return;
+        }
+
         if (now > run.deadline) {
             // Half-done is the interesting case: the gate was there and the first clicks
             // landed, so the rule is real but no longer complete. Silence there would be
@@ -331,6 +389,14 @@
                 log('gave up after step ' + run.idx + ' of ' + run.rule.steps.length +
                     ' — the rest of the sequence never appeared');
             }
+            // The single most useful line in debug mode. If the gate did not show up on
+            // this visit, this says so explicitly, which is what separates "GateSkip
+            // dismissed it" from "the site did not gate you this time".
+            dbg(run.done
+                ? 'watch window ended — the sequence had run'
+                : (run.idx > 0
+                    ? 'watch window ended after step ' + run.idx + ' of ' + run.rule.steps.length + ' — the rest never appeared'
+                    : 'watch window ended and step 1 NEVER MATCHED — no gate was found on this page, so nothing here was clicked by GateSkip'));
             disarm();
             return;
         }
@@ -363,30 +429,30 @@
             run.done = false;
             run.clicked.length = 0;
             log('the page replaced the gate — running the sequence again');
+            dbg('the page put the gate back — running the sequence again (restart ' + run.restarts + ')');
         }
 
         const step = run.rule.steps[run.idx];
         const el = resolveStep(step);
         if (!el || run.clicked.indexOf(el) !== -1) return;
 
-        realClick(el);
-        run.clicked.push(el);
-        run.idx++;
-        run.settleUntil = now + SETTLE_MS;
-
-        if (run.idx >= run.rule.steps.length) {
-            run.done = true;
-            const rules = getRules();
-            if (rules[run.key]) {
-                rules[run.key].lastFired = Date.now();
-                rules[run.key].fires = (rules[run.key].fires || 0) + 1;
-                saveRules(rules);
-            }
-            log('dismissed the gate (' + run.rule.steps.length +
-                (run.rule.steps.length === 1 ? ' click)' : ' clicks)'));
-            // Not disarmed — the window stays open for the re-render case above. The
-            // deadline is what ends it.
+        if (run.debug) {
+            const head = 'GateSkip step ' + (run.idx + 1) + '/' + run.rule.steps.length + ': ' + step.label;
+            hlClear();
+            run.pending = {
+                el, head, shown: -1,
+                at: now + DEBUG_DELAY,
+                hl: hlPaint(el, '#f38ba8', head + ' — clicking in ' + (DEBUG_DELAY / 1000) + 's', true)
+            };
+            // The countdown must not be able to outlive the window it is running inside.
+            run.deadline = Math.max(run.deadline, now + DEBUG_DELAY + 3000);
+            dbg('MATCHED step ' + (run.idx + 1) + '/' + run.rule.steps.length + ' → ' + step.label +
+                ' — marked on the page, clicking in ' + (DEBUG_DELAY / 1000) + 's');
+            try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch (_) {}
+            return;
         }
+
+        performClick(el, now);
     }
 
     // A MutationObserver alone misses a gate that is already in the DOM before we start
@@ -403,15 +469,29 @@
         if (!force && armedUrl === location.href) return;
         disarm();
         armedUrl = location.href;
-        if (!isOn()) return;
+        if (!isOn()) {
+            if (isTop) dbg('master switch is OFF — no rule will fire anywhere');
+            return;
+        }
         const hit = ruleForHost(location.hostname);
-        if (!hit || !hit.rule.steps || !hit.rule.steps.length) return;
+        if (!hit || !hit.rule.steps || !hit.rule.steps.length) {
+            // Only the top frame says this. Every ad and analytics frame on the page
+            // would otherwise report its own "no rule", burying the one line that matters.
+            if (isTop) dbg('no rule for ' + location.hostname + ' — GateSkip is doing nothing on this page');
+            return;
+        }
 
         const watchMs = (hit.rule.watchMs > 0) ? hit.rule.watchMs : watchDefault();
         run = {
             rule: hit.rule, key: hit.key, idx: 0, done: false, clicked: [], restarts: 0, vanished: false,
-            deadline: Date.now() + watchMs, settleUntil: 0, obs: null, timer: null
+            deadline: Date.now() + watchMs, settleUntil: 0, obs: null, timer: null,
+            // Latched for the life of the window: toggling debug mid-countdown would
+            // otherwise strand a pending click that nothing is left to fire.
+            debug: isDebug(), pending: null
         };
+        dbg('armed for ' + hit.key + ' (' + hit.rule.steps.length +
+            (hit.rule.steps.length === 1 ? ' step' : ' steps') + '), watching ' +
+            Math.round(watchMs / 1000) + 's — fired ' + (hit.rule.fires || 0) + ' time(s) before');
         run.timer = setInterval(tick, 200);
         try {
             run.obs = new MutationObserver(tick);
@@ -470,7 +550,17 @@
         st.textContent = ':host { all: initial; }' +
             '.b { position: fixed; box-sizing: border-box; pointer-events: none;' +
             ' border: 2px solid var(--c); border-radius: 4px;' +
-            ' box-shadow: 0 0 0 1px rgba(0,0,0,0.85), 0 0 0 3px rgba(255,255,255,0.55), 0 0 10px 2px var(--c); }';
+            ' box-shadow: 0 0 0 1px rgba(0,0,0,0.85), 0 0 0 3px rgba(255,255,255,0.55), 0 0 10px 2px var(--c); }' +
+            // The debug marker has to be impossible to miss on a page you have never
+            // seen before, over markup of any colour — hence the width, the pulse, and
+            // a label that names the step rather than just drawing a box.
+            '.big { border-width: 6px; border-radius: 6px; animation: gs-pulse .7s ease-in-out infinite alternate; }' +
+            '@keyframes gs-pulse { from { box-shadow: 0 0 0 2px rgba(0,0,0,0.9), 0 0 0 6px rgba(255,255,255,0.7), 0 0 14px 4px var(--c); }' +
+            ' to { box-shadow: 0 0 0 2px rgba(0,0,0,0.9), 0 0 0 12px rgba(255,255,255,0.25), 0 0 34px 12px var(--c); } }' +
+            '.l { position: fixed; pointer-events: none; max-width: 60vw; color: #11111b;' +
+            ' font: 700 14px/1.3 system-ui, sans-serif; padding: 4px 9px; border-radius: 6px;' +
+            ' white-space: pre; overflow: hidden; text-overflow: ellipsis;' +
+            ' box-shadow: 0 3px 12px rgba(0,0,0,0.7); }';
         hlRoot.appendChild(st);
         (document.body || document.documentElement).appendChild(hlLayer);
         window.addEventListener('scroll', hlQueue, { passive: true, capture: true });
@@ -483,30 +573,153 @@
     }
     function hlDraw() {
         for (const e of hlEntries) {
-            if (!e.el || !e.el.isConnected) { e.box.style.display = 'none'; continue; }
-            const r = e.el.getBoundingClientRect();
-            if (r.width < 1 && r.height < 1) { e.box.style.display = 'none'; continue; }
+            const gone = !e.el || !e.el.isConnected;
+            const r = gone ? null : e.el.getBoundingClientRect();
+            if (gone || (r.width < 1 && r.height < 1)) {
+                e.box.style.display = 'none';
+                if (e.lab) e.lab.style.display = 'none';
+                continue;
+            }
             e.box.style.display = '';
             e.box.style.left = (r.left - 3) + 'px';
             e.box.style.top = (r.top - 3) + 'px';
             e.box.style.width = (r.width + 6) + 'px';
             e.box.style.height = (r.height + 6) + 'px';
+            if (e.lab) {
+                // Above the target, unless the target is against the top of the viewport
+                // — a label drawn off-screen is the same as no label.
+                e.lab.style.display = '';
+                e.lab.style.left = Math.max(4, r.left - 3) + 'px';
+                e.lab.style.top = (r.top > 34 ? (r.top - 32) : (r.bottom + 8)) + 'px';
+            }
         }
     }
-    function hlPaint(el, color) {
-        if (!el) return;
+    // Returns a handle so a countdown can be retitled in place rather than by tearing the
+    // marker down and rebuilding it, which would restart the pulse every second.
+    function hlPaint(el, color, label, big) {
+        if (!el) return null;
         hlEnsure();
+        const c = color || '#a6e3a1';
         const box = document.createElement('div');
-        box.className = 'b';
-        box.style.setProperty('--c', color || '#a6e3a1');
-        box.style.backgroundColor = (color || '#a6e3a1') + '30';
+        box.className = big ? 'b big' : 'b';
+        box.style.setProperty('--c', c);
+        box.style.backgroundColor = c + '30';
         hlRoot.appendChild(box);
-        hlEntries.push({ el, box });
+        let lab = null;
+        if (label != null) {
+            lab = document.createElement('div');
+            lab.className = 'l';
+            lab.style.background = c;
+            lab.textContent = label;
+            hlRoot.appendChild(lab);
+        }
+        hlEntries.push({ el, box, lab });
         hlDraw();
+        return {
+            setLabel(t) { if (lab) lab.textContent = t; hlDraw(); },
+            setColor(nc) {
+                box.style.setProperty('--c', nc);
+                box.style.backgroundColor = nc + '30';
+                if (lab) lab.style.background = nc;
+            },
+            stopPulse() { box.className = 'b'; }
+        };
     }
     function hlClear() {
-        for (const e of hlEntries) e.box.remove();
+        for (const e of hlEntries) { e.box.remove(); if (e.lab) e.lab.remove(); }
         hlEntries.length = 0;
+    }
+
+    // ---------------- Debug HUD ----------------
+    // Debug mode exists to answer one question that the script is otherwise structurally
+    // unable to answer: when a gate does not appear on a later visit, was it dismissed,
+    // or was it never shown? Normal operation is deliberately silent and logs only real
+    // events, so "GateSkip did nothing" and "GateSkip found nothing" look identical from
+    // the outside. In debug mode every decision is narrated, including the negative ones,
+    // and no click happens until the target has been on screen for DEBUG_DELAY with a
+    // marker on it — so what it was about to do is visible even when it is wrong.
+    //
+    // The HUD lives only in the top frame; frames relay their lines to it, because a gate
+    // in an embedded player may be in a frame too small to read anything in.
+    let hud = null, hudBody = null;
+    const HUD_MAX = 40;
+
+    function hudEnsure() {
+        if (hud && hud.isConnected) return;
+        hud = document.createElement('div');
+        hud.id = 'gs-hud';
+        hud.style.cssText = 'all: initial;';
+        const root = hud.attachShadow({ mode: 'open' });
+        const st = document.createElement('style');
+        st.textContent = ':host { all: initial; } * { box-sizing: border-box; }';
+        root.appendChild(st);
+
+        const wrap = document.createElement('div');
+        wrap.style.cssText = `
+            position: fixed; bottom: 12px; left: 12px; z-index: 2147483645;
+            width: 460px; max-width: 92vw; background: #11111b; color: #cdd6f4;
+            border: 2px solid #f38ba8; border-radius: 10px; padding: 8px 10px;
+            font: 12px/1.45 ui-monospace, Consolas, monospace;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.7); display: flex; flex-direction: column; gap: 6px;
+        `;
+        const head = document.createElement('div');
+        head.style.cssText = 'display: flex; align-items: center; gap: 8px;';
+        const title = document.createElement('span');
+        title.style.cssText = 'flex: 1; font-weight: 700; color: #f38ba8;';
+        title.textContent = 'GateSkip — DEBUG (clicks delayed ' + (DEBUG_DELAY / 1000) + 's)';
+        const off = document.createElement('button');
+        off.textContent = 'Debug off';
+        off.style.cssText = 'border: none; border-radius: 6px; padding: 3px 8px; cursor: pointer;' +
+            'font: 700 11px system-ui, sans-serif; background: #45475a; color: #cdd6f4;';
+        // Turning debug off mid-countdown cancels the pending click rather than firing it
+        // early: with run.debug clear, the next tick re-resolves the same step and clicks
+        // it immediately, which is exactly normal behaviour resuming.
+        off.addEventListener('click', () => {
+            GM_setValue(DEBUG_KEY, false);
+            hudKill();
+            if (run) { run.debug = false; run.pending = null; hlClear(); }
+        });
+        const hide = document.createElement('button');
+        hide.textContent = 'Hide';
+        hide.style.cssText = off.style.cssText;
+        hide.addEventListener('click', hudKill);
+        head.append(title, hide, off);
+
+        hudBody = document.createElement('div');
+        hudBody.style.cssText = 'display: flex; flex-direction: column; gap: 1px;' +
+            'max-height: 34vh; overflow: auto; word-break: break-word;';
+
+        wrap.append(head, hudBody);
+        root.appendChild(wrap);
+        document.documentElement.appendChild(hud);
+    }
+    function hudKill() {
+        if (hud) { hud.remove(); hud = null; hudBody = null; }
+    }
+    // `frame` is flagged explicitly rather than inferred from the hostname: a frame on
+    // the SAME host as the page is the case where its lines are otherwise indistinguishable
+    // from the top frame's, and "armed … never matched" appearing twice with no way to
+    // tell which document meant which is worse than no line at all.
+    function hudLine(host, m, frame) {
+        hudEnsure();
+        const line = document.createElement('div');
+        const d = new Date();
+        const stamp = String(d.getMinutes()).padStart(2, '0') + ':' +
+            String(d.getSeconds()).padStart(2, '0') + '.' +
+            String(d.getMilliseconds()).padStart(3, '0');
+        line.textContent = stamp + '  ' + (frame ? '⧉ ' + (host || 'frame') + ': ' : '') + m;
+        line.style.cssText = 'color: ' + (/never|no rule|gave up|nothing|off\b/i.test(m) ? '#f9e2af' : '#a6adc8') + ';';
+        hudBody.appendChild(line);
+        while (hudBody.childNodes.length > HUD_MAX) hudBody.removeChild(hudBody.firstChild);
+        hudBody.scrollTop = hudBody.scrollHeight;
+    }
+    // Console as well as the HUD: the HUD dies with the document, and the most confusing
+    // gates are the ones that navigate as they close.
+    function dbg(m) {
+        if (!isDebug()) return;
+        try { console.log('[GateSkip] ' + location.hostname + ' — ' + m); } catch (_) {}
+        if (isTop) hudLine(location.hostname, m, false);
+        else toTop({ type: 'dbg', m: String(m), host: location.hostname });
     }
 
     // ---------------- Cross-frame messaging ----------------
@@ -551,6 +764,9 @@
                 if (mine && mine.key === d.host) runTest(d.stepIndex | 0);
                 break;
             }
+            case 'dbg':
+                if (isTop && isDebug()) hudLine(String(d.host || ''), String(d.m || ''), true);
+                break;
             case 'test-result':
                 // Only positives are reported. Every frame that does not have the
                 // element would otherwise answer "no", and the first of those would win
@@ -1022,7 +1238,21 @@
         watchTxt2.textContent = 'seconds after each load';
         watchLabel.append(watchTxt1, watchIn, watchTxt2);
 
-        globalRow.append(onLabel, watchLabel);
+        const dbgLabel = document.createElement('label');
+        dbgLabel.style.cssText = 'display: flex; align-items: center; gap: 6px; cursor: pointer; color: #f38ba8;';
+        dbgLabel.title = 'For testing. Marks the element it is about to click, waits ' +
+            (DEBUG_DELAY / 1000) + ' seconds, then clicks it — and narrates every decision, ' +
+            'including “no gate was found”, in a panel at the bottom left.';
+        dbgLabel.append(mkCheck(isDebug(), (v) => {
+            GM_setValue(DEBUG_KEY, !!v);
+            if (!v) { hudKill(); if (run) { run.debug = false; run.pending = null; hlClear(); } }
+            arm(true);
+        }));
+        const dbgTxt = document.createElement('span');
+        dbgTxt.textContent = 'Debug mode (show the target, wait ' + (DEBUG_DELAY / 1000) + 's, then click)';
+        dbgLabel.append(dbgTxt);
+
+        globalRow.append(onLabel, watchLabel, dbgLabel);
 
         // --- rule list ---
         const list = document.createElement('div');
@@ -1229,6 +1459,13 @@
     if (isTop) {
         GM_registerMenuCommand('GateSkip: teach this page', startTeaching);
         GM_registerMenuCommand('GateSkip: settings', openSettings);
+        GM_registerMenuCommand('GateSkip: debug mode on/off', () => {
+            const v = !isDebug();
+            GM_setValue(DEBUG_KEY, v);
+            if (!v) { hudKill(); if (run) { run.debug = false; run.pending = null; hlClear(); } }
+            arm(true);
+            toast('GateSkip: debug mode ' + (v ? 'ON — clicks are delayed ' + (DEBUG_DELAY / 1000) + 's and marked on the page.' : 'off.'));
+        });
         GM_registerMenuCommand('GateSkip: forget this site', () => {
             const rules = getRules();
             const hit = ruleForHost(location.hostname);

@@ -96,6 +96,38 @@ Driving them from the browser console / a CDP `evaluate` is enough — teach via
 `__gsMenu["GateSkip: teach this page"]()`, click the gate, then click **Save** inside
 `document.getElementById('gs-popup').shadowRoot`, then reload and read `GM:gs_log`.
 
+## Debug mode (v0.2.0, added 2026-08-16 — temporary)
+
+Added because a taught site that no longer shows its gate is ambiguous: GateSkip
+dismissing it, the site not gating this visit, and the rule silently failing all look
+identical from the outside. `gs_debug` (GM, default false) turns on:
+
+- a pulsing 6px marker + label on the element about to be clicked, then a **5s delay**
+  (`DEBUG_DELAY`) before `performClick`. Pending click lives in `run.pending`, and
+  `run.debug` is **latched at arm() time** so toggling mid-countdown cannot strand it.
+- a HUD (`#gs-hud`, top frame only, bottom left) narrating every decision **including the
+  negatives** — that is the whole point; the normal `gs_log` deliberately records only
+  real events. Frames relay via a `dbg` message and are prefixed `⧉ <host>:`.
+
+Traps found while building it:
+
+- **The frame prefix cannot be inferred from the hostname.** A same-host iframe (which
+  `fixture-iframe.html` is) produces "armed … / never matched" lines identical to the top
+  frame's. The relay flags `frame: true` explicitly.
+- **The countdown can outlive the watch window**, so creating a pending click pushes
+  `run.deadline` out to `now + DEBUG_DELAY + 3000`.
+- **A mid-countdown vanish must cancel, not fire.** `fixture-simple.html` hits this on
+  every load: the gate is in the served HTML, detached at parse time, so step 1 matches at
+  document-start and is gone milliseconds later. Verified in the HUD.
+- **Teaching from a frame is asynchronous.** A test that calls `startTeaching()` and then
+  clicks in the frame synchronously records nothing — the `teach-on` broadcast has not
+  landed. Looked exactly like a broken relay; it was the test. Wait a tick.
+
 ## Cleanup owed
 
-None.
+- **Remove debug mode when testing is done** — it is scaffolding, not a feature. Delete:
+  `DEBUG_KEY` / `DEBUG_DELAY` / `isDebug`, the whole "Debug HUD" section, the `dbg` calls
+  in `arm`/`tick`/`performClick`, the `run.debug` / `run.pending` branch in `tick()` (keep
+  `performClick` — the split is an improvement either way), the `.big` / `.l` CSS and the
+  label/handle half of `hlPaint`, the `dbg` message case, the Settings tickbox, and the
+  menu command. The README's "Debug mode" section goes with it.
