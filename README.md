@@ -34,6 +34,30 @@ Selectors are built to survive ordinary churn — generated class names (`css-1a
 `active`), and generated ids (`react-aria-42`) are all skipped, and a looser variant
 without sibling positions is tried if the exact one fails.
 
+## Remembering preferences
+
+Dismissing gates is one case of a bigger job: holding the site preferences a fresh container
+throws away — sidebar closed, dark theme, wide layout — and putting them back without the site
+being told anything.
+
+1. Set the site up the way you like it.
+2. Pick **Forget Me Not: remember this site** from the Violentmonkey menu.
+3. You get a list of everything that changed since the moment before you first touched the
+   page, and one question: **which of these did you mean to set?** Preferences arrive ticked.
+   Session ids, tokens, timestamps and other things the site wrote for its own purposes arrive
+   unticked, each with a one-line reason.
+4. Press **Save**, or **Save & reload** to trim the list and check it still works.
+
+Fewer entries is better — keep the smallest set that works. An entry you leave unticked and
+that looks like an identifier is remembered only by name: its value is not stored anywhere.
+
+Nothing is ever sent to the site, and **Forget Me Not never writes a cookie**. The values are
+kept locally and written back into your own browser before the page loads.
+
+> **Not finished yet (v0.12.0).** Capture and review work; putting the values back on a later
+> visit is the next piece of work. Until then this records what you chose and does nothing
+> with it.
+
 ## Scope
 
 Rules are keyed on the hostname of the document the gate is in, with an optional
@@ -48,6 +72,7 @@ were reading — so teaching it once fixes every site that embeds the same playe
 
 - master on/off switch, and how long to watch after each load
 - every rule, its recorded clicks, when it last fired, and per-rule enable / subdomains
+- **Prefs** — re-opens the review list for a host, so you can untick, re-tick or forget it
 - **Test** — looks for a rule's first click on the page behind the dialog (and in every
   frame on it), highlighting it in green if found
 - **Recent activity** — what actually fired, so a broken rule is distinguishable from a

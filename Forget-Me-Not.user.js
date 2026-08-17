@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        Forget Me Not
 // @namespace   https://github.com/VitaKaninen
-// @version     0.11.0
+// @version     0.12.0
 // @author      VitaKaninen
 // @description Teach it, once, which clicks dismiss a site's age gate, cookie wall or unwanted panel — then it remembers, and does that for you on every later visit. Nothing is guessed and nothing fires until you have taught it.
 // @match       *://*/*
@@ -85,7 +85,7 @@
     const TRACE_MAX = 600;            // trace lines kept; a few page loads' worth
     // Bump with @version. A trace file that does not say which build produced it is worth
     // much less when it arrives days later.
-    const VERSION = '0.11.0';
+    const VERSION = '0.12.0';
 
     // Rule shape:
     //   { host, subdomains, enabled, watchMs, steps: [Step], created, lastFired, fires }
@@ -1442,6 +1442,525 @@
         setTimeout(() => host.remove(), 3000);
     }
 
+    // ---------------- Shared UI bits ----------------
+    // Used by both halves. The prefs review panel and Settings are the one place the
+    // click runner and the preference replayer are meant to share anything, so these
+    // live at module scope rather than being duplicated on each side of the seam.
+    function smallBtn(label, bg, fg) {
+        const b = document.createElement('button');
+        b.textContent = label;
+        b.style.cssText = 'padding: 4px 10px; border-radius: 6px; border: none; font-size: 12px;' +
+            'font-weight: 700; cursor: pointer; white-space: nowrap; background: ' + bg +
+            '; color: ' + (fg || '#1e1e2e') + ';';
+        return b;
+    }
+    function mkCheck(checked, onChange) {
+        const c = document.createElement('input');
+        c.type = 'checkbox';
+        c.checked = checked;
+        c.style.cssText = 'accent-color: #89b4fa; cursor: pointer;';
+        c.addEventListener('change', () => onChange(c.checked));
+        return c;
+    }
+
+    // ---------------- Preferences: the baseline ----------------
+    // A capture is a diff, so it needs a "before", and choosing the wrong one is a
+    // mistake this project has already paid for twice on the click side. Snapshotting at
+    // document-start would put the site's entire start-up in the diff — on Wikipedia that
+    // is `client-js`, `mw-ready`, `vector-sticky-header-visible` and every session and
+    // analytics key the page writes — burying the one line that matters, exactly as the
+    // v0.6.0 success test was buried by the same churn.
+    //
+    // The baseline is therefore "the state of the page at the last moment before you
+    // touched anything": one snapshot, taken in a capture-phase listener on the first
+    // pointerdown / keydown / click. The capture path starts at `window`, so this runs
+    // before any handler the site has on the element — the page has not yet reacted to
+    // the click when the snapshot is taken.
+    //
+    // docs/PREFS.md specifies this as a rolling snapshot re-taken every ~500ms and frozen
+    // at first interaction. Same definition, and the polling is not needed to reach it:
+    // freezing AT the interaction is strictly more accurate (a poll is up to 500ms stale),
+    // costs nothing on a page nobody touches, and — the reason that actually decided it —
+    // it can tell "you never interacted with this page" apart from "you interacted and
+    // nothing changed". Rolling silently merges those two into an empty diff, which is
+    // the wrong answer for the common case of setting a preference inside an embedded
+    // frame, whose events the top frame never sees. The rejected `load`+2000ms design
+    // stays rejected: an early scroll would freeze it before the site had finished
+    // starting up, which is the one thing the baseline exists to prevent.
+    //
+    // Deliberately NOT gated on the master switch. Off means nothing fires; taking a
+    // snapshot fires nothing, and gating it would mean switching Forget Me Not on
+    // mid-visit left you with no before-state and no way to know why.
+    const PREF_MAX_VALUE = 4096;      // longest value worth carrying into GM storage
+    const FREEZE_ON = ['pointerdown', 'keydown', 'click'];
+
+    let baseline = null;              // frozen snapshot, or null until first interaction
+
+    function storeMap(store) {
+        const o = {};
+        // Storage throws outright in a sandboxed frame and on a site the user has
+        // blocked it for. A capture that cannot see storage is still a valid capture of
+        // the DOM, so this degrades to an empty map rather than taking the panel down.
+        try {
+            for (let i = 0; i < store.length; i++) {
+                const k = store.key(i);
+                if (k !== null) o[k] = store.getItem(k);
+            }
+        } catch (_) {}
+        return o;
+    }
+
+    // Class is pulled out of the attribute map: it is the one attribute with add/remove
+    // semantics, and reporting it in both places would offer the user the same change
+    // twice under two shapes.
+    function elState(el) {
+        if (!el) return null;
+        const attrs = {};
+        try {
+            for (const a of el.attributes) if (a.name !== 'class') attrs[a.name] = a.value;
+        } catch (_) {}
+        return {
+            cls: (el.getAttribute('class') || '').split(/\s+/).filter(Boolean),
+            attrs
+        };
+    }
+
+    const snapshot = () => ({
+        t: Date.now(),
+        root: elState(document.documentElement),
+        body: elState(document.body),
+        ls: storeMap(localStorage),
+        ss: storeMap(sessionStorage)
+    });
+
+    if (isTop) {
+        const freeze = (e) => {
+            if (baseline) return;
+            // Narrate BEFORE snapshotting, not after. Under tests/gm-shim.js the trace
+            // lives in the page's own localStorage, so a line written after the snapshot
+            // would show up in every capture diff as a storage change the site never made.
+            // Costs nothing in the real script, where GM storage is a separate store.
+            dbg('preference baseline frozen at first ' + e.type +
+                ' — everything the site did before this is its own start-up, not a preference');
+            baseline = snapshot();
+            baseline.why = e.type;
+            for (const t of FREEZE_ON) window.removeEventListener(t, freeze, true);
+        };
+        for (const t of FREEZE_ON) window.addEventListener(t, freeze, { capture: true, passive: true });
+    }
+
+    // ---------------- Preferences: the classifier ----------------
+    // Annotates and pre-decides; it never blocks. The user is the gate. It exists to save
+    // labour on the question the review panel actually asks — "which of these did you
+    // mean to set?" — and is not an authority on safety.
+    const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+    const ID_WORDS = ['id', 'ids', 'uid', 'uuid', 'guid', 'sid', 'session', 'token', 'auth',
+                      'visitor', 'device', 'fingerprint', 'tracking', 'analytics'];
+
+    // Whole words only, splitting on punctuation AND camelCase humps. A bare substring
+    // test is unusable here: "id" is inside `sidebar`, `hidden`, `width` and `provider`,
+    // so it would arrive unticked on the very preferences this feature exists to keep.
+    function nameWords(name) {
+        return String(name)
+            .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+            .split(/[^A-Za-z0-9]+/)
+            .map(w => w.toLowerCase())
+            .filter(Boolean);
+    }
+
+    function classify(name, value) {
+        const v = value == null ? '' : String(value);
+        // Value first, then the name: when both fire, "looks like a UUID" tells the user
+        // more than "the key is called clickId" does.
+        if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v))
+            return { flag: 'idlike', why: 'looks like a UUID' };
+        if (UUID_RE.test(v))
+            return { flag: 'idlike', why: 'contains a UUID' };
+        if (/^\d{10,}$/.test(v))
+            return { flag: 'idlike', why: 'a ' + v.length + '-digit number — almost always a timestamp or an id' };
+        if (v.length >= 24 && /^[A-Za-z0-9+/]+={0,2}$/.test(v) && /[A-Z]/.test(v) && /[a-z]/.test(v))
+            return { flag: 'idlike', why: 'looks like base64 or a token (' + v.length + ' chars)' };
+        if (v.length >= 32 && /[A-Z]/.test(v) && /[a-z]/.test(v) && /[0-9]/.test(v))
+            return { flag: 'idlike', why: 'a long mixed-case token (' + v.length + ' chars)' };
+        if (v.length > 200)
+            return { flag: 'idlike', why: 'a long value (' + v.length + ' chars) — contents not reviewed' };
+        const words = nameWords(name);
+        const hit = ID_WORDS.find(w => words.includes(w));
+        if (hit) return { flag: 'idlike', why: 'the name contains “' + hit + '”' };
+        return { flag: 'ok', why: '' };
+    }
+
+    // ---------------- Preferences: the diff ----------------
+    // Identity of an entry, used to merge a fresh capture into prefs already stored so a
+    // second capture cannot wipe the first — the same rule teaching follows since v0.11.0.
+    // A class entry is identified by the class NAME, not by whether this capture added or
+    // removed it. On one element a class is either present or absent, so "+theme-dark"
+    // and "−theme-dark" are two states of one entry, not two entries — and treating them
+    // as two is incoherent the moment the user flips a preference and captures again:
+    // the stored set would then say both add it and remove it. That makes a class behave
+    // exactly like an attribute, where the name is the identity and the value is the state.
+    const entryId = (e) =>
+        e.kind + '|' + (e.sel || '') + '|' +
+        (e.kind === 'class' ? ((e.add && e.add.length) ? e.add[0] : (e.remove || [])[0])
+            : e.kind === 'attr' ? e.name : e.key);
+
+    // What this entry currently says, for "has it changed since we last saw it?".
+    const entryState = (e) => e.kind === 'class'
+        ? ((e.add && e.add.length) ? '+' : '-')
+        : (e.value === null ? ' absent' : String(e.value));
+
+    function classDiff(a, b, sel, out) {
+        // One entry per class, not one entry carrying two arrays. The workflow is to trim
+        // until it stops working and step back one, and that is impossible if six of
+        // Wikipedia's clientpref classes arrive welded into a single tick box.
+        for (const c of b.cls) if (!a.cls.includes(c)) {
+            const k = classify(c, c);
+            out.push({ kind: 'class', sel, add: [c], remove: [], flag: k.flag, why: k.why });
+        }
+        for (const c of a.cls) if (!b.cls.includes(c)) {
+            const k = classify(c, c);
+            out.push({ kind: 'class', sel, add: [], remove: [c], flag: k.flag, why: k.why });
+        }
+    }
+
+    function attrDiff(a, b, sel, out) {
+        for (const n of Object.keys(b.attrs)) {
+            if (a.attrs[n] === b.attrs[n]) continue;
+            const k = classify(n, b.attrs[n]);
+            out.push({ kind: 'attr', sel, name: n, value: b.attrs[n], flag: k.flag, why: k.why });
+        }
+        // A DOM removal IS replayable and a storage removal is not, and the asymmetry is
+        // worth stating: the document is served identically on every visit, so an
+        // attribute the user cleared is back again next time and has to be cleared again.
+        // A storage key they deleted was never there to begin with in a fresh container.
+        for (const n of Object.keys(a.attrs)) {
+            if (n in b.attrs) continue;
+            out.push({ kind: 'attr', sel, name: n, value: null, flag: 'ok', why: '' });
+        }
+    }
+
+    function storeDiff(a, b, kind, out, notes) {
+        for (const key of Object.keys(b)) {
+            if (a[key] === b[key]) continue;
+            if (String(b[key]).length > PREF_MAX_VALUE) { notes.big++; continue; }
+            const k = classify(key, b[key]);
+            out.push({ kind, key, value: b[key], flag: k.flag, why: k.why });
+        }
+        for (const key of Object.keys(a)) if (!(key in b)) notes.gone++;
+    }
+
+    function diffPrefs(base, now) {
+        const out = [], notes = { gone: 0, big: 0 };
+        if (base.root && now.root) { classDiff(base.root, now.root, ':root', out); attrDiff(base.root, now.root, ':root', out); }
+        if (base.body && now.body) { classDiff(base.body, now.body, 'body', out); attrDiff(base.body, now.body, 'body', out); }
+        storeDiff(base.ls, now.ls, 'ls', out, notes);
+        storeDiff(base.ss, now.ss, 'ss', out, notes);
+        for (const e of out) e.enabled = e.flag === 'ok';
+        return { entries: out, notes };
+    }
+
+    // ---------------- Preferences: the review panel ----------------
+    // ONE panel, built once, shown in two places: straight after "Remember this site"
+    // with the fresh diff in it, and re-opened per host from Settings. Both are needed —
+    // the decision wants the context you have at capture time, and the trim-until-it-
+    // breaks workflow is impossible if review only ever happens once.
+    const KIND_ORDER = ['class', 'attr', 'ls', 'ss'];
+    const KIND_TITLE = {
+        class: 'Classes on the page',
+        attr: 'Attributes on the page',
+        ls: 'localStorage',
+        ss: 'sessionStorage'
+    };
+
+    function entryLabel(e) {
+        if (e.kind === 'class') return e.sel + '  ' + (e.add.length ? '+ ' + e.add[0] : '− ' + e.remove[0]);
+        if (e.kind === 'attr') return e.sel + '  ' + e.name + (e.value === null ? '  (removed)' : '');
+        return e.key;
+    }
+    const shortVal = (v, n) => (v == null ? '' : (v.length > n ? v.slice(0, n) + '…' : v));
+
+    // The one rule that keeps this honest: an entry the user left unticked AND the
+    // classifier called id-like does not get its value written to GM storage. Replay
+    // would never have used it, and keeping a copy of the identifier the container exists
+    // to destroy — in the one store the container cannot reach — is the exact harm this
+    // project is built to avoid. The key and the reason are kept, so re-opening the panel
+    // still shows that you excluded it; re-ticking it needs a fresh capture.
+    const keepsValue = (e) => e.enabled || e.flag !== 'idlike';
+    function forStorage(e) {
+        const o = Object.assign({}, e);
+        delete o.fresh;
+        if ((o.kind === 'ls' || o.kind === 'ss' || o.kind === 'attr') && !keepsValue(o)) {
+            o.value = null;
+            o.redacted = true;
+        }
+        return o;
+    }
+
+    function savePrefs(hostKey, entries, capturedAt) {
+        const rules = getRules();
+        const prev = rules[hostKey];
+        const kept = entries.map(forStorage);
+        // Mirror of the per-sequence delete in Settings: a host with nothing taught and
+        // nothing remembered is clutter, and leaving the husk behind means the rule list
+        // fills up with entries that do nothing and cannot be explained.
+        if (!kept.length && !seqsOf(prev).length) {
+            delete rules[hostKey];
+            saveRules(rules);
+            return;
+        }
+        rules[hostKey] = {
+            v: SCHEMA_V,
+            host: hostKey,
+            subdomains: prev ? !!prev.subdomains : false,
+            enabled: prev ? prev.enabled !== false : true,
+            clicks: seqsOf(prev),
+            prefs: kept.length ? { captured: capturedAt || new Date().toISOString(), entries: kept } : null
+        };
+        saveRules(rules);
+    }
+
+    function openPrefsReview(hostKey, entries, opts) {
+        if (!isTop || document.getElementById('gs-prefs')) return;
+        const o = opts || {};
+
+        const host = document.createElement('div');
+        host.id = 'gs-prefs';
+        host.style.cssText = 'all: initial;';
+        const root = host.attachShadow({ mode: 'open' });
+        const reset = document.createElement('style');
+        reset.textContent = ':host { all: initial; } * { box-sizing: border-box; }';
+        root.appendChild(reset);
+
+        const overlay = document.createElement('div');
+        overlay.style.cssText = `
+            position: fixed; inset: 0; z-index: 2147483647; background: rgba(0,0,0,0.6);
+            display: flex; align-items: center; justify-content: center; font-family: system-ui, sans-serif;
+        `;
+        const panel = document.createElement('div');
+        panel.style.cssText = `
+            background: #1e1e2e; color: #cdd6f4; border-radius: 10px; padding: 20px 24px;
+            width: min(720px, 94vw); max-height: 86vh; display: flex; flex-direction: column;
+            gap: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.5); overflow: hidden;
+        `;
+
+        const title = document.createElement('div');
+        title.style.cssText = 'font-size: 15px; font-weight: 700; color: #89b4fa;';
+        title.textContent = 'Forget Me Not — what to remember for ' + hostKey;
+
+        // The framing is load-bearing, not decorative. Asked "which of these look risky?"
+        // the user is being made to audit entropy, which they cannot do and should not
+        // have to. Asked "which did you mean to set?" they answer at a glance, and that
+        // question is the one that actually separates the state they caused (free to
+        // replay — they would have clicked it anyway) from the state the site caused
+        // (which the container was going to destroy).
+        const desc = document.createElement('div');
+        desc.style.cssText = 'font-size: 12px; color: #9399b2; line-height: 1.45;';
+        desc.textContent = 'Which of these did you mean to set? Tick those and they will be put back on ' +
+            'every visit, before the page loads. Nothing is sent to the site — these values are kept here ' +
+            'and written into your own browser. Fewer is better: keep the smallest set that works.';
+
+        const list = document.createElement('div');
+        list.style.cssText = 'flex: 1; min-height: 100px; overflow: auto; display: flex; flex-direction: column;' +
+            'gap: 10px; border: 1px solid #313244; border-radius: 8px; padding: 8px;';
+
+        function drawRows() {
+            while (list.firstChild) list.removeChild(list.firstChild);
+            if (!entries.length) {
+                const empty = document.createElement('div');
+                empty.style.cssText = 'color: #6c7086; font-size: 12px; padding: 8px;';
+                empty.textContent = 'Nothing captured for this host.';
+                list.appendChild(empty);
+                return;
+            }
+            for (const kind of KIND_ORDER) {
+                const group = entries.filter(e => e.kind === kind);
+                if (!group.length) continue;
+
+                const gh = document.createElement('div');
+                gh.style.cssText = 'font-size: 11px; font-weight: 700; color: #89b4fa; text-transform: uppercase;' +
+                    'letter-spacing: .04em; margin-top: 2px;';
+                gh.textContent = KIND_TITLE[kind];
+                list.appendChild(gh);
+
+                for (const e of group) {
+                    const row = document.createElement('div');
+                    row.style.cssText = 'background: #313244; border-radius: 8px; padding: 6px 10px;' +
+                        'display: flex; gap: 8px; align-items: flex-start;';
+
+                    const cb = mkCheck(!!e.enabled, (v) => {
+                        e.enabled = v;
+                        // Re-drawn rather than mutated in place so the redaction warning
+                        // on an id-like row appears and disappears with the tick, which is
+                        // the only moment the user can see that rule operating.
+                        drawRows();
+                    });
+                    cb.style.cssText += 'margin-top: 2px;';
+
+                    const body = document.createElement('div');
+                    body.style.cssText = 'flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px;';
+
+                    const head = document.createElement('div');
+                    head.style.cssText = 'display: flex; gap: 6px; align-items: baseline;';
+                    const name = document.createElement('span');
+                    name.style.cssText = 'font-size: 12px; font-weight: 700; overflow: hidden;' +
+                        'text-overflow: ellipsis; white-space: nowrap;';
+                    name.textContent = entryLabel(e);
+                    name.title = entryLabel(e);
+                    head.appendChild(name);
+                    if (e.fresh && o.merged) {
+                        const tag = document.createElement('span');
+                        tag.style.cssText = 'font-size: 10px; color: #1e1e2e; background: #a6e3a1;' +
+                            'border-radius: 4px; padding: 0 5px; font-weight: 700;';
+                        tag.textContent = 'new';
+                        head.appendChild(tag);
+                    }
+                    body.appendChild(head);
+
+                    if (e.kind === 'ls' || e.kind === 'ss' || (e.kind === 'attr' && e.value !== null)) {
+                        const val = document.createElement('div');
+                        val.style.cssText = 'font: 11px/1.4 ui-monospace, Consolas, monospace; color: #a6adc8;' +
+                            'overflow: hidden; text-overflow: ellipsis; white-space: nowrap;';
+                        val.textContent = e.redacted && !e.enabled
+                            ? '(value not kept — re-capture to restore it)'
+                            : shortVal(String(e.value), 140);
+                        val.title = e.redacted && !e.enabled ? '' : String(e.value == null ? '' : e.value);
+                        body.appendChild(val);
+                    }
+
+                    if (e.flag === 'idlike') {
+                        const why = document.createElement('div');
+                        why.style.cssText = 'font-size: 11px; color: ' + (e.enabled ? '#f9e2af' : '#9399b2') + ';';
+                        why.textContent = (e.enabled ? '⚠ ' : '') + e.why +
+                            (e.enabled ? ' — you have chosen to replay it anyway.'
+                                       : ' — left out, and its value will not be stored.');
+                        body.appendChild(why);
+                    }
+
+                    row.append(cb, body);
+                    list.appendChild(row);
+                }
+            }
+        }
+        drawRows();
+
+        const notes = document.createElement('div');
+        notes.style.cssText = 'font-size: 11px; color: #6c7086; line-height: 1.45;';
+        const noteBits = [];
+        if (o.notes && o.notes.gone) {
+            noteBits.push(o.notes.gone + ' storage key(s) the site deleted are not listed — a deletion ' +
+                'cannot be replayed into a fresh container, where the key was never there.');
+        }
+        if (o.notes && o.notes.big) {
+            noteBits.push(o.notes.big + ' value(s) over ' + PREF_MAX_VALUE + ' characters were left out as too large to carry.');
+        }
+        if (o.capturedAt && !o.merged) noteBits.push('Captured ' + new Date(o.capturedAt).toLocaleString() + '.');
+        notes.textContent = noteBits.join(' ');
+
+        const foot = document.createElement('div');
+        foot.style.cssText = 'display: flex; gap: 8px; flex-wrap: wrap; align-items: center;';
+        const status = document.createElement('span');
+        status.style.cssText = 'font-size: 11px; color: #a6e3a1; flex: 1; min-width: 0;' +
+            'overflow: hidden; text-overflow: ellipsis; white-space: nowrap;';
+
+        const commit = () => {
+            const on = entries.filter(e => e.enabled).length;
+            savePrefs(hostKey, entries, o.merged || !o.capturedAt ? null : o.capturedAt);
+            log(on + ' preference(s) saved for ' + hostKey + ' (' + entries.length + ' reviewed)');
+            dbg('saved ' + on + ' of ' + entries.length + ' preference entries for ' + hostKey);
+            return on;
+        };
+
+        const saveBtn = smallBtn('Save', '#a6e3a1');
+        saveBtn.title = 'Keep the ticked entries. Nothing is applied until the next load.';
+        saveBtn.addEventListener('click', () => {
+            const on = commit();
+            host.remove();
+            toast('Forget Me Not: remembering ' + on + (on === 1 ? ' thing' : ' things') + ' for ' + hostKey + '.');
+        });
+
+        // Trimming is the intended workflow — untick, reload, see whether the site still
+        // looks right, and step back one when it does not — so the reload has to be here
+        // rather than something the user is told to go and do.
+        const saveGo = smallBtn('Save & reload', '#89b4fa');
+        saveGo.title = 'Save, then reload the page to see whether this set is enough.';
+        saveGo.addEventListener('click', () => { commit(); location.reload(); });
+
+        const forgetBtn = smallBtn('Forget these', '#f38ba8');
+        forgetBtn.title = 'Drop every preference stored for this host. Taught clicks are left alone.';
+        forgetBtn.addEventListener('click', () => {
+            savePrefs(hostKey, [], null);
+            log('preferences cleared for ' + hostKey);
+            host.remove();
+            toast('Forget Me Not: forgot the preferences for ' + hostKey + '.');
+        });
+
+        const cancel = smallBtn('Cancel', '#45475a', '#cdd6f4');
+        cancel.addEventListener('click', () => host.remove());
+
+        foot.append(saveBtn, saveGo, forgetBtn, status, cancel);
+
+        panel.append(title, desc, list, notes, foot);
+        overlay.appendChild(panel);
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) host.remove(); });
+        root.appendChild(overlay);
+        document.documentElement.appendChild(host);
+    }
+
+    // ---------------- Preferences: "Remember this site" ----------------
+    function captureNow() {
+        if (!isTop) return;
+        if (!baseline) {
+            toast('Forget Me Not: I have no “before” for this page yet. Set the site up the way ' +
+                  'you like it — click something — then choose this again.');
+            dbg('capture asked for with no baseline — nothing has been interacted with on this page');
+            return;
+        }
+        const hit = ruleForHost(location.hostname);
+        const hostKey = hit ? hit.key : location.hostname;
+        const stored = (hit && hit.rule && hit.rule.prefs) || null;
+        const prev = (stored && Array.isArray(stored.entries)) ? stored.entries.slice() : [];
+
+        const { entries, notes } = diffPrefs(baseline, snapshot());
+
+        // A second capture MERGES, for the same reason teaching appends: a preference set
+        // three pages into a site must not wipe the one set on the landing page.
+        //
+        // An entry already reviewed keeps the DECISION the user made about it, but takes
+        // the NEW VALUE. Those pull in opposite directions and both are needed: dropping
+        // the new value means changing a preference and re-capturing silently stores the
+        // old one, while dropping the decision means every re-capture re-ticks something
+        // the user deliberately excluded. Only the value is the site's to update; the tick
+        // is the user's.
+        const byId = new Map(prev.map(e => [entryId(e), e]));
+        let added = 0, changed = 0;
+        for (const e of entries) {
+            const old = byId.get(entryId(e));
+            if (!old) { e.fresh = true; byId.set(entryId(e), e); added++; continue; }
+            const moved = entryState(old) !== entryState(e) || old.redacted;
+            if (e.kind === 'class') { old.add = e.add; old.remove = e.remove; }
+            else old.value = e.value;
+            old.flag = e.flag;
+            old.why = e.why;
+            delete old.redacted;
+            if (moved) { old.fresh = true; changed++; }
+        }
+        const merged = Array.from(byId.values());
+        const fresh = merged.filter(e => e.fresh);
+
+        if (!merged.length) {
+            toast('Forget Me Not: nothing has changed on this page since you first touched it.');
+            dbg('capture found no differences from the baseline');
+            return;
+        }
+        dbg('captured ' + added + ' new and ' + changed + ' updated change(s) since the baseline (' +
+            fresh.filter(e => e.enabled).length + ' of those ticked), ' + prev.length + ' already stored');
+        openPrefsReview(hostKey, merged, {
+            notes,
+            merged: prev.length > 0,
+            capturedAt: stored ? stored.captured : null
+        });
+    }
+
     // ---------------- Testing a rule against this page ----------------
     let testWait = null;   // { key, found } while a broadcast test is outstanding
 
@@ -1522,25 +2041,12 @@
         const desc = document.createElement('div');
         desc.style.cssText = 'font-size: 12px; color: #9399b2; line-height: 1.45;';
         desc.textContent = 'Forget Me Not does nothing on a site until you teach it there. ' +
-            '"Teach this page" records the clicks you make to dismiss a gate; afterwards it makes those ' +
-            'same clicks for you, for about ' + Math.round(watchDefault() / 1000) + ' seconds after each load.';
+            '"Remember this site" captures the preferences you just set and puts them back on every ' +
+            'later visit, without telling the site anything. "Teach this page" is the fallback for ' +
+            'state that is not stored anywhere: it records the clicks you make to dismiss a gate and ' +
+            'repeats them, for about ' + Math.round(watchDefault() / 1000) + ' seconds after each load.';
 
-        function smallBtn(label, bg, fg) {
-            const b = document.createElement('button');
-            b.textContent = label;
-            b.style.cssText = 'padding: 4px 10px; border-radius: 6px; border: none; font-size: 12px;' +
-                'font-weight: 700; cursor: pointer; white-space: nowrap; background: ' + bg +
-                '; color: ' + (fg || '#1e1e2e') + ';';
-            return b;
-        }
-        const mkCheck = (checked, onChange) => {
-            const c = document.createElement('input');
-            c.type = 'checkbox';
-            c.checked = checked;
-            c.style.cssText = 'accent-color: #89b4fa; cursor: pointer;';
-            c.addEventListener('change', () => onChange(c.checked));
-            return c;
-        };
+        // smallBtn / mkCheck are module scope — see "Shared UI bits".
 
         // --- global row ---
         const globalRow = document.createElement('div');
@@ -1616,9 +2122,26 @@
                 name.title = key + (r.subdomains ? ' and every subdomain' : ' (this host only)');
 
                 const seqs = seqsOf(r);
+                const pEntries = (r.prefs && Array.isArray(r.prefs.entries)) ? r.prefs.entries : [];
                 const meta = document.createElement('span');
                 meta.style.cssText = 'font-size: 11px; color: #9399b2; white-space: nowrap;';
-                meta.textContent = seqs.length + (seqs.length === 1 ? ' sequence' : ' sequences');
+                meta.textContent = seqs.length + (seqs.length === 1 ? ' sequence' : ' sequences') +
+                    (pEntries.length ? ' · ' + pEntries.filter(e => e.enabled).length + ' of ' +
+                        pEntries.length + ' prefs' : '');
+
+                // The second of the two places the one review panel appears. It is
+                // re-openable per host precisely because trimming is the workflow: the
+                // decision made at capture time is not the last word on it.
+                const prefBtn = pEntries.length ? smallBtn('Prefs', '#cba6f7', '#11111b') : null;
+                if (prefBtn) {
+                    prefBtn.title = 'Review what is remembered for ' + key +
+                        ' — tick, untick, or forget it entirely.';
+                    prefBtn.addEventListener('click', () => {
+                        host.remove();
+                        openPrefsReview(key, pEntries.map(e => Object.assign({}, e)),
+                                        { capturedAt: r.prefs.captured });
+                    });
+                }
 
                 const delBtn = smallBtn('Delete', '#f38ba8');
                 delBtn.title = 'Remove this host and every sequence taught for it.';
@@ -1631,7 +2154,9 @@
                     arm(true);
                 });
 
-                head.append(en, name, meta, delBtn);
+                head.append(en, name, meta);
+                if (prefBtn) head.appendChild(prefBtn);
+                head.appendChild(delBtn);
 
                 // One block per sequence. They are independent — a host can hold the age
                 // gate from its landing page and an unrelated popup from three pages in —
@@ -1747,6 +2272,11 @@
         teachBtn.title = 'Close this dialog and start recording clicks on ' + location.hostname + '.';
         teachBtn.addEventListener('click', () => { host.remove(); startTeaching(); });
 
+        const rememberBtn = smallBtn('Remember this site', '#cba6f7', '#11111b');
+        rememberBtn.title = 'Capture what changed on ' + location.hostname +
+            ' since you first touched this page, and choose what to keep.';
+        rememberBtn.addEventListener('click', () => { host.remove(); captureNow(); });
+
         const exportBtn = smallBtn('Export', '#45475a', '#cdd6f4');
         exportBtn.title = 'Copy every rule to the clipboard as JSON.';
         exportBtn.addEventListener('click', () => {
@@ -1812,7 +2342,7 @@
         const closeBtn = smallBtn('Close', '#89b4fa');
         closeBtn.addEventListener('click', () => host.remove());
 
-        foot.append(teachBtn, exportBtn, importBtn, traceBtn, clearTraceBtn, status, closeBtn);
+        foot.append(teachBtn, rememberBtn, exportBtn, importBtn, traceBtn, clearTraceBtn, status, closeBtn);
 
         const io = document.createElement('div');
         io.style.cssText = 'display: none; flex-direction: column; gap: 6px;';
@@ -1835,15 +2365,20 @@
                 // silently accepting one here would be the compatibility path by the back
                 // door. Re-teaching is seconds.
                 const seqs = seqsOf(r).filter(s => s && Array.isArray(s.steps) && s.steps.length);
-                if (!seqs.length) { skipped++; continue; }
-                rules[k] = Object.assign({ v: SCHEMA_V, host: k, subdomains: false, enabled: true, prefs: null },
-                                         r, { clicks: seqs.map(s => Object.assign(newSeq([]), s)) });
+                // A host may legitimately carry preferences and no taught clicks at all —
+                // that is the whole point of the replay ladder, where clicking is the
+                // fallback. Requiring a sequence here silently dropped those rules.
+                const pref = (r && r.prefs && Array.isArray(r.prefs.entries) && r.prefs.entries.length)
+                    ? r.prefs : null;
+                if (!seqs.length && !pref) { skipped++; continue; }
+                rules[k] = Object.assign({ v: SCHEMA_V, host: k, subdomains: false, enabled: true },
+                                         r, { clicks: seqs.map(s => Object.assign(newSeq([]), s)), prefs: pref });
                 n++;
             }
             saveRules(rules);
             status.style.color = skipped ? '#f9e2af' : '#a6e3a1';
             status.textContent = 'Merged ' + n + ' rule(s).' +
-                (skipped ? ' Skipped ' + skipped + ' with no v2 “clicks” array — re-teach those.' : '');
+                (skipped ? ' Skipped ' + skipped + ' with neither a v2 “clicks” array nor preferences — re-teach those.' : '');
             io.style.display = 'none';
             drawList();
             arm(true);
@@ -1869,6 +2404,7 @@
     // ---------------- Boot ----------------
     if (isTop) {
         GM_registerMenuCommand('Forget Me Not: teach this page', startTeaching);
+        GM_registerMenuCommand('Forget Me Not: remember this site', captureNow);
         GM_registerMenuCommand('Forget Me Not: settings', openSettings);
         GM_registerMenuCommand('Forget Me Not: forget this site', () => {
             const rules = getRules();

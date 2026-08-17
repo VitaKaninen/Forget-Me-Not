@@ -96,15 +96,23 @@
 </div>
 
 <div class="card">
-  <b>A capture taken after one click on Toggle theme must contain exactly these four
+  <b>A capture taken after one click on Toggle theme must contain exactly these five
   entries, and no others:</b>
   <table>
     <tr><th>entry</th><th>arrives</th><th>because</th></tr>
-    <tr><td><code>class :root +theme-dark</code></td><td>ticked</td><td>short, enumerable, and the user caused it</td></tr>
-    <tr><td><code>ls fmnfix.theme = dark</code></td><td>ticked</td><td>same</td></tr>
+    <tr><td><code>class :root + theme-dark</code></td><td>ticked</td><td>short, enumerable, and the user caused it</td></tr>
+    <tr><td><code>class :root − theme-light</code></td><td>ticked</td><td>its own entry — see below</td></tr>
+    <tr><td><code>ls fmnfix.theme = dark</code></td><td>ticked</td><td>short, enumerable, user-caused</td></tr>
     <tr><td><code>ls fmnfix.analytics.lastSeen</code></td><td><b>unticked</b></td><td>13-digit number — a timestamp</td></tr>
     <tr><td><code>ls fmnfix.clickId</code></td><td><b>unticked</b></td><td>a UUID, and the key name says <code>id</code></td></tr>
   </table>
+  <p><b>The removal is a separate, separately tickable entry, and it is load-bearing.</b>
+     This table said “four” until the differ was built and disagreed with it; the differ was
+     right. The document is served with <code>theme-light</code> on every visit, so replaying
+     only <code>+theme-dark</code> leaves both classes present, and here the two rules have
+     equal specificity — source order decides, and light wins. One entry per class is also
+     what makes trimming possible at all: six of Wikipedia's <code>clientpref</code> classes
+     welded into a single tick box could not be trimmed to one.</p>
   <p>The last two are the site writing its own state <i>during the same interaction</i>
      the user meant as a preference. They cannot be excluded by any baseline, which is
      precisely why the review step exists and why the question it asks is
@@ -120,6 +128,13 @@
   written before the user touched anything, all inside the baseline.
   <br>A diff that shows them means the baseline froze too early (or was taken at
   document-start, the design this one replaced).
+  <p><b>One exception, and it is the shim, not the differ:</b> a SECOND capture taken
+     without reloading will also list <code>GM:fmn_rules</code>, <code>GM:fmn_log</code> and
+     <code>GM:fmn_trace</code> — the first capture's own save, which under
+     <code>tests/gm-shim.js</code> lands in this page's localStorage because the shim has
+     nowhere else to put GM storage. Real GM storage is invisible to the page. Take the
+     second capture <i>after a reload</i>, which is the realistic flow anyway, and the diff
+     is clean.</p>
 </div>
 
 <script>

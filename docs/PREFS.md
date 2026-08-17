@@ -75,9 +75,22 @@ Entry kinds, smallest-blast-radius first:
 { kind:'ss',    key:'…', value:'…' }        // sessionStorage
 ```
 
-Every entry also carries `enabled` (the tick box) and `flag` (`'ok'` or `'idlike'`, from the
-classifier). **There is no cookie kind, deliberately** — see CLAUDE.md for why, and do not
-add one.
+Every entry also carries `enabled` (the tick box), `flag` (`'ok'` or `'idlike'`) and `why` (the
+classifier's one-line reason). **There is no cookie kind, deliberately** — see CLAUDE.md for
+why, and do not add one.
+
+Three things settled while building the capture side (v0.12.0), all reasoned in `../CLAUDE.md`:
+
+- **One entry per class**, so the arrays are always length 0 or 1. Six of Wikipedia's
+  `clientpref` classes in a single tick box could not be trimmed, and trimming is the workflow.
+  A class entry's identity is the class **name**; the sign is its state, exactly as an
+  attribute's name is identity and its value is state.
+- **`attr` `value: null` means "remove it".** DOM removals are replayable because the document
+  is served the same way every visit. **Storage removals are not offered at all** — the key was
+  never there in a fresh container — and are counted in the panel footer instead.
+- **An unticked `idlike` entry is stored without its value** (`redacted: true`). Keeping a copy
+  of a session id in the one store the container cannot reach is the harm this project exists
+  to prevent, and replay would never have read it.
 
 `ss` is the weakest of the four and it is worth saying so, since it was listed above with no
 argument attached. Unlike `ls`, sessionStorage dies with the tab whatever the container does —
@@ -107,15 +120,22 @@ Wikipedia that is `client-js`, `mw-ready`, `vector-sticky-header-visible`, plus 
 session and analytics keys the page wrote. The signal (`…-clientpref-0`) would be buried in
 noise, exactly as the v0.6.0 success test was.
 
-So: **the baseline is not a moment, it is a rolling snapshot that freezes when the user
-first touches the page.**
+So: **the baseline is "the state of the page at the last moment before you touched
+anything".** Everything the site did during start-up is inside it and cannot appear in the
+diff. Everything the user did is after it, and does.
 
-    rolling baseline := re-snapshot every ~500ms; FREEZE at the first real user
-                        interaction (pointerdown / keydown / click)
+    baseline := ONE snapshot, taken in a window capture-phase listener on the first
+                pointerdown / keydown / click
 
-The frozen value is therefore "the state of the page at the last moment before you touched
-anything". Everything the site did during start-up is inside the baseline and cannot appear
-in the diff. Everything the user did is after it, and does.
+**Built 2026-08-17 as a single frozen snapshot, not the rolling ~500ms poll this section
+originally specified.** Same definition; the polling was not needed to reach it. The capture
+path starts at `window`, so the listener runs before the site's own handler and the page has
+not yet reacted to the click — which makes freezing *at* the interaction strictly more accurate
+than a poll up to 500ms stale, and free on a page nobody touches. The argument that decided it:
+a single frozen snapshot can tell **"you never interacted with this page"** apart from **"you
+interacted and nothing changed"**, and rolling collapses both into an empty diff. The first is
+common — a preference set inside a cross-origin frame, whose events the top frame never sees —
+and it deserves an honest refusal rather than a silent shrug.
 
 **An earlier draft had this as "`load`+2000ms, or first interaction, whichever comes first",
 and that is broken.** Scroll at 500ms and the baseline freezes before the site has finished
@@ -235,7 +255,7 @@ shape or any pref code to exist first.
 
 1. Schema v2 + `fmn_*` keys, no behaviour change, no migration. ✅ v0.10.0 / v0.11.0.
 2. **The four fixtures**, before any pref code is written. ✅ 2026-08-17.
-3. Rolling baseline + capture + review panel.
+3. Baseline + capture + review panel. ✅ v0.12.0.
 4. Replay + re-assertion + trace lines.
 5. Wikipedia.
 

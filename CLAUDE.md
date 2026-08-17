@@ -172,6 +172,87 @@ short enumerable values arrive pre-ticked and UUIDs / long tokens / base64 blobs
 arrive unticked with a warning. Automatic capture is rejected outright: it would silently
 persist and replay the identifiers the container is there to destroy.
 
+## Capture: baseline, classifier, review panel (v0.12.0, 2026-08-17)
+
+M3. The preference half now has a capture side: a baseline, a diff, a classifier, and the
+review panel — all in the `Preferences:` sections between Toast and "Testing a rule". Replay
+does not exist yet, so nothing captured does anything on a later load; that is M4.
+
+**The baseline is one snapshot taken in a `window` capture-phase listener on the first
+pointerdown / keydown / click — not the rolling 500ms poll `docs/PREFS.md` specifies.** The
+definition is unchanged ("the state of the page at the last moment before you touched
+anything"); the polling turned out not to be needed to reach it. Freezing *at* the interaction
+is strictly more accurate — the capture path starts at `window`, so it runs before the site's
+own handler and the page has not yet reacted — and it costs nothing on a page nobody touches.
+
+- **The reason that actually decided it:** freeze-at-interaction can tell "you never interacted
+  with this page" apart from "you interacted and nothing changed". Rolling collapses both into
+  an empty diff. The first case is common — a preference set inside a cross-origin frame, whose
+  events the top frame never sees — and it now produces an honest refusal (`capture asked for
+  with no baseline`) instead of a silent shrug. Verified.
+- The rejected `load`+2000ms design stays rejected for the reason PREFS gives: an early scroll
+  would freeze it mid-start-up, which is the one thing the baseline exists to prevent.
+- **Not gated on the master switch.** Off means nothing *fires*; a snapshot fires nothing, and
+  gating it would mean switching Forget Me Not on mid-visit silently left you with no
+  before-state.
+
+**A class entry is identified by the class NAME, not by whether this capture added or removed
+it.** On one element a class is present or absent, so `+theme-dark` and `−theme-dark` are two
+states of one entry. Getting this wrong is not theoretical — it was measured: with the sign in
+the identity, flipping the theme and capturing again stored *both* `+theme-dark` and
+`−theme-dark`, an instruction set that contradicts itself. Fixed by making a class behave like
+an attribute: name is identity, sign is state. Re-verified across a reload — the two class
+entries flip in place and the count stays at 5.
+
+**One entry per class, never one entry carrying `add:[…]` and `remove:[…]` arrays.** The
+workflow is to trim until it stops working and step back one, and that is impossible if six of
+Wikipedia's `clientpref` classes arrive welded into a single tick box. The stored shape still
+matches `docs/PREFS.md` — the arrays are just always length 0 or 1.
+
+**A DOM removal is replayable; a storage removal is not.** The document is served identically
+on every visit, so an attribute or class the user cleared is back next time and has to be
+cleared again — those are real entries. A storage key they deleted was never there to begin
+with in a fresh container, so replaying its deletion is a no-op at best and mistimed at worst.
+Storage deletions are counted and mentioned in the panel footer rather than offered as entries;
+dropping them silently would be worse than either.
+
+**A second capture MERGES, and the two halves of an entry are owned by different people:** the
+value is the site's and is always updated, the tick is the user's and is always preserved.
+Dropping the new value means changing a preference and re-capturing silently keeps the old one;
+dropping the decision means every re-capture re-ticks something deliberately excluded. Same
+"must not wipe what came before" rule teaching got in v0.11.0.
+
+**An unticked entry the classifier called id-like is stored WITHOUT its value** (`redacted:
+true`, key and reason kept). Keeping a copy of a session id — in the one store the container
+cannot reach — is exactly the harm this project exists to prevent, and replay would never have
+used it. The rule in one line: *the value is kept when the entry is enabled, or when the
+classifier saw nothing id-like about it.* An unticked but ordinary value keeps its value, which
+is what makes the trim-and-step-back workflow work. Re-ticking a redacted entry needs a fresh
+capture, and the panel says so where the value would be.
+
+- **The classifier matches whole words in a key name, split on punctuation AND camelCase
+  humps.** A substring test is unusable: `id` is inside `sidebar`, `hidden`, `width` and
+  `provider`, so `body.sidebar-hidden` — a preference this feature exists to keep — would
+  arrive unticked. Value rules are checked before name rules, because "looks like a UUID" tells
+  the user more than "the key is called clickId".
+- Values over `PREF_MAX_VALUE` (4096) are not offered at all, and counted in the footer. That is
+  the capture declining to carry a payload, not the classifier blocking a risky value — the
+  classifier still never blocks.
+
+**Trap the fixtures caught, worth repeating: a second capture *within one page life* shows
+`GM:fmn_rules` / `GM:fmn_log` / `GM:fmn_trace` as storage entries** — the first capture's own
+save, which under `tests/gm-shim.js` lands in the page's localStorage. `GM:fmn_log` is short
+enough to arrive **ticked**. This is the shim, not the differ; real GM storage is invisible to
+the page. Take the second capture after a reload. The one production concession made for it is
+that `freeze()` writes its trace line *before* taking the snapshot rather than after, which
+costs nothing in the real script and keeps first captures clean.
+
+**Rejected: reworking `gm-shim.js` to keep GM values in memory and flush at `pagehide`.** It
+would remove the artefact above, and it would break something real — GM storage is shared
+across frames, which is how a frame's trace lines reach the top document, and an in-memory map
+is per frame with last-flush-wins. Do not break a working instrument to tidy an artefact that
+appears in one flow and has a one-word workaround ("reload").
+
 ## Decisions that are not obvious from the code
 
 **Rules are keyed on the hostname of the document the gate is in — not the top page's.**

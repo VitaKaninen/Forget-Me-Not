@@ -24,9 +24,8 @@ re-litigation, unless it says otherwise.
   reinvent them.
 - **The design for the new subsystem is written**: `docs/PREFS.md`. It is complete enough to
   build from.
-- **v0.11.0 is the current script.** M2 added four preference fixtures and `tests/pref-probe.js`
-  and changed no script code, so the version is unchanged and no regression is possible from it.
-  Next up is **M3**.
+- **v0.12.0 is the current script.** M2 added four preference fixtures and `tests/pref-probe.js`
+  with no script change; M3 added the capture half. Next up is **M4**, replay.
 
 ## Step 0 — the rename. ✅ DONE 2026-08-17.
 
@@ -155,11 +154,36 @@ Two things worth carrying into M3/M4:
   those land after the baseline freezes. With no rule stored, GM writes stop at document-start
   and the diff is clean. Verified rather than assumed.
 
-**M3 — Rolling baseline + "Remember this site" capture + review UI.** The fixtures now say what
-it has to produce: on `fixture-pref-noise.html`, exactly four entries after one click, two of
-them pre-ticked and two of them unticked with a reason.
+**M3 — Baseline + "Remember this site" capture + review UI. ✅ DONE 2026-08-17, v0.12.0.**
+Menu command `Forget Me Not: remember this site` (also a button in Settings), the review panel,
+and a `Prefs` button per host card that re-opens the same panel. Nothing captured *does*
+anything yet — replay is M4 — so a regression from this can only be in the UI or the differ.
 
-**M4 — Replay at document-start + re-assertion + trace lines.**
+Measured on the fixtures: `fixture-pref-dom.html` yields 2 entries and no storage rows;
+`fixture-pref-noise.html` yields exactly the 5 its table now names, with the start-up churn
+excluded and the two site-caused rows unticked with reasons; `fixture-pref-ls.html` adds the
+`ss` row; capture with no interaction refuses honestly; re-capture across a reload flips the
+class entries in place instead of accumulating; unticked id-like values are stored redacted;
+Settings' `Prefs` button re-opens the panel with `Captured …` and the redaction note. The click
+half was re-checked on `fixture-simple.html` (dismissed, one `armed for` line).
+
+Three design points that came out of building it are in `CLAUDE.md` under "Capture: baseline,
+classifier, review panel" — the baseline is a single frozen snapshot rather than PREFS's rolling
+poll (and `docs/PREFS.md` is corrected), a class entry's identity is the class name rather than
+the ± sign, and an unticked id-like entry is stored without its value. The second was found by
+the fixture, not by reasoning: with the sign in the identity, flipping a preference and
+capturing again stored both "add it" and "remove it".
+
+**M4 — Replay at document-start + re-assertion + trace lines.** The fixtures already state what
+it has to do, and `fixture-pref-hostile.html` is the one to build against. Two things waiting
+for it, both noted rather than done, because doing them now would have put runner changes in a
+capture-only commit:
+
+- **`arm()` still logs `no rule for <host> — Forget Me Not is doing nothing on this page` when
+  the host has prefs but no taught clicks.** That is already slightly wrong and will be plainly
+  wrong once replay exists.
+- **A prefs-only rule is now a normal thing to have** (`clicks: []`). The Settings importer was
+  fixed to accept one; check anything else that assumes a rule implies a sequence.
 
 **M5 — Wikipedia, anonymous, in a fresh container.** Sidebar closed and dark theme from first
 paint, with nothing transmitted.
