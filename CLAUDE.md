@@ -103,6 +103,35 @@ step counts as done only once the page demonstrably moved.
 - Exhausting the attempts is **reported, not swallowed** — `run.noop` downgrades the
   completion line to "ran all N clicks, but at least one of them changed nothing".
 
+## The retry ladder has to outlast the page's start-up (v0.5.0, 2026-08-17)
+
+Third time the same confound produced the same misleading symptom, so it is worth stating as
+a rule: **when the reported symptom is "it only works with debug on", the variable is
+`DEBUG_DELAY`, not debug.** Twice now the user's own experiment settled it — toggling debug
+*either direction* made it work, which cannot be about debug's behaviour, only about the five
+seconds it inserts and the `arm(true)` the toggle performs.
+
+Here the ladder (4 attempts over ~3.5s) ran out before Wikipedia's `skins.vector.js` bound its
+panel toggles. The step was then written off permanently while **the watch window still had ten
+seconds left and the control was sitting right there**. Giving up was terminal: `commitClick`
+marks the sequence done, and the restart test needs the gate to vanish and return, which a
+panel toggle that stays visible never does.
+
+Now 8 attempts over ~16s, gaps growing 400 → 3000ms, and the verify grace grows with them
+(450 → 1200ms) because a busy page can take longer than 450ms to show a reaction. The debug
+line reports `document.readyState` at click time — a click landing while the document is still
+`loading`/`interactive` is the one most likely to hit an unbound handler, and that is invisible
+from anywhere else.
+
+**What is NOT a fix for this: waiting for readyState before clicking.** It would forfeit
+dismissing a server-rendered gate before first paint, which is the whole reason hunting starts
+at document-start. And it would not have helped here anyway — Vector binds long after
+`complete`. Nor can a MutationObserver help: `addEventListener` produces no mutation, so
+"handler attached" is unobservable by construction. Time-based retry is the only lever.
+
+Test it with `tests/fixture-late.html?wire=8000`; v0.4.0 fails it, logging that it clicked
+step 1 four times with the gate still up.
+
 ## The watch window is measured from the wrong end (v0.4.0, 2026-08-17)
 
 `arm()` runs at document-start, so the ten-second window was spent *while the page was still

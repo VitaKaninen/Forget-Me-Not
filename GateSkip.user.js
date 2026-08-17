@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        GateSkip
 // @namespace   https://github.com/VitaKaninen
-// @version     0.4.0
+// @version     0.5.0
 // @author      VitaKaninen
 // @description Teach it, once, which clicks dismiss a site's age gate, cookie wall or unwanted panel — then it does that for you on every later visit. Nothing is guessed and nothing fires until you have taught it.
 // @match       *://*/*
@@ -41,9 +41,20 @@
     // moment spent the whole budget before the page was even usable.
     const WATCH_DEFAULT = 15000;
     const SETTLE_MS = 150;            // pause after a click before hunting the next step
-    const VERIFY_MS = 450;            // grace period before deciding a click did nothing
-    const CLICK_TRIES = 4;            // attempts at one step before writing it off
-    const RETRY_WAIT = [400, 900, 1800];  // gaps before attempts 2, 3 and 4
+
+    // The retry ladder has to outlast the page's own start-up, because the thing it is
+    // waiting for — a script attaching a handler to markup that is already on screen —
+    // takes as long as it takes and produces no signal of any kind while it happens.
+    // A ladder that gave up after 3.5s was the difference between working and not on
+    // Wikipedia, whose skins.vector.js binds its panel toggles well after that: the click
+    // fired, did nothing, the step was written off, and the remaining ten seconds of the
+    // watch window went by with the control sitting right there untouched.
+    //
+    // Gaps grow so a page that is simply slow is not hammered, and the verify grace grows
+    // with them because a busy page can take longer than 450ms to show a reaction.
+    const CLICK_TRIES = 8;            // attempts at one step before writing it off
+    const RETRY_WAIT = [400, 900, 1800, 3000, 3000, 3000, 3000];
+    const VERIFY_WAIT = [450, 600, 800, 1000, 1200, 1200, 1200, 1200];
     const MAX_RESTARTS = 2;           // re-runs allowed when the page replaces the gate
     const LOG_MAX = 120;
     const DEBUG_DELAY = 5000;         // debug mode: how long to show the target first
@@ -465,12 +476,17 @@
         v.hit = v.cands[(v.tries - 1) % v.cands.length] || v.el;
         v.before = clickState(v.hit);
         v.phase = 'check';
-        v.at = now + VERIFY_MS;
-        run.settleUntil = now + VERIFY_MS;
+        const grace = VERIFY_WAIT[Math.min(v.tries - 1, VERIFY_WAIT.length - 1)];
+        v.at = now + grace;
+        run.settleUntil = now + grace;
         // A retry cycle must not be cut short by the watch window closing under it.
-        run.deadline = Math.max(run.deadline, now + VERIFY_MS + 4000);
+        run.deadline = Math.max(run.deadline, now + grace + 4000);
         realClick(v.hit);
+        // readyState is worth saying out loud: a click that lands while the document is
+        // still 'loading' or 'interactive' is the one most likely to hit markup whose
+        // handler has not been attached yet, and that is invisible from anywhere else.
         dbg('clicked step ' + (run.idx + 1) + ' of ' + run.rule.steps.length +
+            ' [doc ' + document.readyState + ']' +
             (v.max > 1 ? ' (attempt ' + v.tries + ' of ' + v.max + ')' : '') +
             (v.hit !== v.el ? ' — on ' + descEl(v.hit) + ' around the ' + descEl(v.el) + ' taught'
                             : (v.cands.length > 1 ? ' — on the ' + descEl(v.el) + ' taught' : '')));
@@ -622,8 +638,9 @@
             v.phase = 'wait';
             v.at = now + wait;
             run.settleUntil = now + wait;
-            run.deadline = Math.max(run.deadline, now + wait + VERIFY_MS + 4000);
-            dbg('step ' + (run.idx + 1) + ': nothing on the page changed — trying again in ' + wait + 'ms');
+            run.deadline = Math.max(run.deadline, now + wait + VERIFY_WAIT[VERIFY_WAIT.length - 1] + 4000);
+            dbg('step ' + (run.idx + 1) + ': nothing on the page changed — attempt ' + v.tries +
+                ' of ' + v.max + ' in ' + wait + 'ms');
             if (run.mark) { try { run.mark.setColor('#f9e2af'); run.mark.setLabel('GateSkip: no reaction — retrying'); } catch (_) {} }
             return;
         }

@@ -86,9 +86,11 @@ Turning it off mid-countdown cancels the pending click; the next tick clicks nor
   screen, look completely normal and do nothing, because the site attached its handler
   seconds after sending the markup. GateSkip watches for the page actually reacting —
   the element vanishing, a checkbox flipping, a class or a size changing anywhere up its
-  ancestor chain — and clicks again, up to four times, if nothing moved.
-- **It says so when a click achieved nothing.** Four attempts with no reaction is logged
-  as exactly that, rather than as a dismissal. "GateSkip did nothing" and "GateSkip did
+  ancestor chain — and clicks again if nothing moved, up to eight times over about sixteen
+  seconds. The gaps grow, because what it is waiting for is a script that will take as long
+  as it takes and gives no signal while it does.
+- **It says so when a click achieved nothing.** Running out of attempts with no reaction is
+  logged as exactly that, rather than as a dismissal. "GateSkip did nothing" and "GateSkip did
   something that had no effect" are different problems and now read differently.
 - **A gate that comes back is clicked again**, up to twice, for sites that tear the gate
   down and re-render it.

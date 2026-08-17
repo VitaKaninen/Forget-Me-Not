@@ -46,8 +46,12 @@
   // document-start lands in the dead window and does nothing at all — while looking, from
   // the outside, exactly like a click that worked. GateSkip must notice that the page did
   // not react and try again.
-  const WIRE_AT = 2000;
+  // ?wire=8000 to push the handlers past the old 3.5s retry ladder. Wikipedia's panel
+  // toggles bind at roughly that sort of delay, and a ladder that ran out before then
+  // wrote the step off while the watch window still had ten seconds left on it.
+  const WIRE_AT = Number(new URLSearchParams(location.search).get('wire')) || 2000;
   window.__wired = false;
+  window.__wireAt = WIRE_AT;
 
   setTimeout(() => {
     const ov = document.getElementById('overlay');
