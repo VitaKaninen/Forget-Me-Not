@@ -17,6 +17,26 @@ for state with no stored representation.
 - Wikipedia's anonymous preferences are read **client-side**, from a cookie whose value is
   literally a CSS class name, and the served HTML is identical for everyone (CDN-cached, so
   it cannot vary). Measured 2026-08-17 — see CLAUDE.md.
+- **Rung 1 alone is sufficient for Wikipedia's theme and layout preferences. Measured
+  2026-08-17** on `en.wikipedia.org/wiki/Cat`, anonymous. Swapping only the root class —
+  `skin-theme-clientpref-day` → `skin-theme-clientpref-night` — moved `body`'s computed
+  background from `rgb(248, 249, 250)` to `rgb(32, 33, 34)`, with **localStorage untouched and
+  empty throughout**. So dark mode needs no rung 2 at all: the CSS is already served and keyed
+  off that class, and nothing has to be told anything. Same shape for the TOC pin
+  (`vector-feature-toc-pinned-clientpref-1` → `-0`).
+
+  The full set of `clientpref` classes on a default anonymous visit, all on `:root`, is:
+  `vector-feature-toc-pinned-clientpref-1`, `vector-feature-limited-width-clientpref-1`,
+  `vector-feature-custom-font-size-clientpref-1`,
+  `vector-feature-appearance-pinned-clientpref-1`, `skin-theme-clientpref-day`,
+  `skin-thumbsize-clientpref-standard`. Low-entropy and enumerable — every one should arrive
+  **pre-ticked** from the classifier, and together they are the whole M5 target.
+
+  Note the Appearance panel's radio controls are **not in the served HTML** — `skins.vector.js`
+  populates them, and it had still not done so 4s after load in a background tab. That is the
+  same late-binding module that beat the click runner's retry ladder in v0.5.0, and it is a
+  concrete argument for prefs over clicks on this site: rung 1 does not care whether the
+  control ever appears.
 
 ## Data model
 
@@ -203,7 +223,9 @@ shape or any pref code to exist first.
 - **Rung 1 vs rung 2 sufficiency.** At capture time both a DOM diff and a storage diff may be
   present, and knowing which is *sufficient* needs a reload to test. v1 replays whatever was
   ticked and lets the user trim; an automatic "try fewer entries" pass can come later, once
-  there is evidence about how often it matters.
+  there is evidence about how often it matters. **First data point in: on Wikipedia rung 1 is
+  sufficient on its own and rung 2 is not needed at all** (measured 2026-08-17, above). One
+  site is not a pattern, but it is the M5 target, so M5 does not depend on resolving this.
 - **Request headers.** A userscript cannot touch them. If server-rendered preferences ever
   become important, that is an extension, not a feature — keep the seam clean rather than
   half-emulating it.
