@@ -1,0 +1,35 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>GateSkip fixture — simple gate</title>
+<style>
+  body { font: 15px/1.5 system-ui, sans-serif; margin: 40px; }
+  #overlay { position: fixed; inset: 0; background: rgba(0,0,0,.75); display: flex;
+             align-items: center; justify-content: center; }
+  .box { background: #fff; padding: 28px 32px; border-radius: 10px; text-align: center; }
+  .box button { margin: 6px; padding: 8px 18px; font-size: 15px; cursor: pointer; }
+</style>
+
+<script src="gm-shim.js"></script>
+<script src="../GateSkip.user.js"></script>
+
+<h1 id="content">The real page content.</h1>
+<p>If you can read this without an overlay, the gate was dismissed.</p>
+
+<div id="overlay">
+  <div class="box age-gate">
+    <h2>Are you over 18?</h2>
+    <button class="btn btn-deny" id="deny">No, take me away</button>
+    <button class="btn btn-enter" id="enter">Yes, I am over 18</button>
+  </div>
+</div>
+
+<script>
+  // The gate is injected a beat AFTER load, like a real one — so a script that only
+  // looks once at document-start must miss it and the MutationObserver must catch it.
+  const ov = document.getElementById('overlay');
+  // Query INSIDE ov: once it is detached, document.getElementById can no longer see
+  // anything in its subtree.
+  ov.querySelector('#enter').addEventListener('click', () => ov.remove());
+  ov.remove();
+  setTimeout(() => document.body.appendChild(ov), 400);
+</script>

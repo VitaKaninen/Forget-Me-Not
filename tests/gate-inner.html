@@ -1,0 +1,27 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>embedded player</title>
+<style>
+  body { font: 14px system-ui, sans-serif; margin: 0; height: 240px; background: #222; color: #eee;
+         display: flex; align-items: center; justify-content: center; }
+  #gate { position: fixed; inset: 0; background: #111; display: flex; align-items: center;
+          justify-content: center; flex-direction: column; gap: 10px; }
+  button { padding: 8px 18px; font-size: 15px; cursor: pointer; }
+</style>
+
+<script src="gm-shim.js"></script>
+<script src="../GateSkip.user.js"></script>
+
+<div id="player">▶ the video plays here</div>
+
+<div id="gate">
+  <div>This video is age restricted.</div>
+  <button class="confirm-age">I am over 18</button>
+</div>
+
+<script>
+  const gate = document.getElementById('gate');
+  gate.querySelector('.confirm-age').addEventListener('click', () => gate.remove());
+  gate.remove();
+  setTimeout(() => document.body.appendChild(gate), 300);
+</script>

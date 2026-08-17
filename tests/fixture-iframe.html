@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>GateSkip fixture — gate inside an embedded frame</title>
+<style>
+  body { font: 15px/1.5 system-ui, sans-serif; margin: 40px; }
+  iframe { width: 560px; height: 240px; border: 1px solid #999; }
+</style>
+
+<script src="gm-shim.js"></script>
+<script src="../GateSkip.user.js"></script>
+
+<h1>An article with an embedded player.</h1>
+<p>The top page has no gate at all — the gate lives in the frame below.</p>
+
+<iframe id="player" src="gate-inner.html"></iframe>

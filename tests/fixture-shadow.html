@@ -1,0 +1,49 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>GateSkip fixture — two-step gate in a shadow root</title>
+<style>
+  body { font: 15px/1.5 system-ui, sans-serif; margin: 40px; }
+</style>
+
+<script src="gm-shim.js"></script>
+<script src="../GateSkip.user.js"></script>
+
+<h1 id="content">The real page content.</h1>
+<p>If you can read this without an overlay, the gate was dismissed.</p>
+
+<div id="vendor-widget"></div>
+
+<script>
+  // Two things a real consent/age widget does that a naive selector cannot survive:
+  // it lives behind a shadow root, and its confirm button is DISABLED until the
+  // checkbox is really ticked — so the teach flow has to let the first click through.
+  const holder = document.getElementById('vendor-widget');
+  const root = holder.attachShadow({ mode: 'open' });
+  root.innerHTML = `
+    <style>
+      .scrim { position: fixed; inset: 0; background: rgba(0,0,0,.75);
+               display: flex; align-items: center; justify-content: center; }
+      .card { background: #fff; padding: 26px 30px; border-radius: 10px; font: 15px system-ui; }
+      button { margin-top: 12px; padding: 8px 18px; font-size: 15px; cursor: pointer; }
+      button[disabled] { opacity: .4; cursor: not-allowed; }
+    </style>
+    <div class="scrim css-1f9a2b">
+      <div class="card">
+        <h2>Age verification</h2>
+        <label class="consent"><input type="checkbox" id="ok"> I confirm I am 18 or older</label>
+        <br>
+        <button id="go" disabled>Enter site</button>
+      </div>
+    </div>`;
+
+  // Wire the listeners BEFORE detaching: once scrim is out of the tree, getElementById
+  // on the shadow root can no longer find anything inside it.
+  const scrim = root.querySelector('.scrim');
+  const cb = scrim.querySelector('#ok');
+  const go = scrim.querySelector('#go');
+  cb.addEventListener('change', () => { go.disabled = !cb.checked; });
+  go.addEventListener('click', () => scrim.remove());
+
+  scrim.remove();
+  setTimeout(() => root.appendChild(scrim), 400);
+</script>
