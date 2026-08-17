@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        Forget Me Not
 // @namespace   https://github.com/VitaKaninen
-// @version     0.8.0
+// @version     0.9.0
 // @author      VitaKaninen
 // @description Teach it, once, which clicks dismiss a site's age gate, cookie wall or unwanted panel — then it remembers, and does that for you on every later visit. Nothing is guessed and nothing fires until you have taught it.
 // @match       *://*/*
@@ -32,8 +32,7 @@
     const ON_KEY = 'gs_on';           // GM: false to switch the whole thing off
     const WATCH_KEY = 'gs_watch';     // GM: default watch window, ms
     const LOG_KEY = 'gs_log';         // GM: [{ t, host, m }] — newest first, capped
-    const DEBUG_KEY = 'gs_debug';     // GM: true to narrate + delay every click
-    const TRACE_KEY = 'gs_trace';     // GM: [line] — the narration, kept whether debug is on or not
+    const TRACE_KEY = 'gs_trace';     // GM: [line] — the narration of every decision, always on
     const TEACH_KEY = 'gs_teach';     // sessionStorage (top frame): teaching in progress
 
     // How long to keep looking. Measured from the last point the page reached, not from
@@ -61,8 +60,7 @@
     const TRACE_MAX = 600;            // trace lines kept; a few page loads' worth
     // Bump with @version. A trace file that does not say which build produced it is worth
     // much less when it arrives days later.
-    const VERSION = '0.8.0';
-    const DEBUG_DELAY = 5000;         // debug mode: how long to show the target first
+    const VERSION = '0.9.0';
 
     // Rule shape:
     //   { host, subdomains, enabled, watchMs, steps: [Step], created, lastFired, fires }
@@ -86,7 +84,6 @@
     const getRules = () => readJson(RULES_KEY, {});
     const saveRules = (r) => writeJson(RULES_KEY, r);
     const isOn = () => GM_getValue(ON_KEY, true) !== false;
-    const isDebug = () => GM_getValue(DEBUG_KEY, false) === true;
     const watchDefault = () => {
         const n = parseInt(GM_getValue(WATCH_KEY, WATCH_DEFAULT), 10);
         return (n > 0 && n <= 120000) ? n : WATCH_DEFAULT;
@@ -256,7 +253,7 @@
         return out;
     }
 
-    // For the debug HUD, so "which of the four did it actually hit" is answerable.
+    // For the trace, so "which of the four candidates did it actually hit" is answerable.
     function descEl(el) {
         if (!el || !el.tagName) return '?';
         const id = el.getAttribute('id');
@@ -499,7 +496,6 @@
         if (!run) return;
         try { if (run.obs) run.obs.disconnect(); } catch (_) {}
         try { if (run.timer) clearInterval(run.timer); } catch (_) {}
-        if (run.debug) hlClear();
         run = null;
     }
 
@@ -590,35 +586,6 @@
         const now = Date.now();
         if (now < run.settleUntil) return;
 
-        // Debug mode: a click is already lined up and being shown. Nothing else may
-        // happen until it fires or its target goes away — re-hunting mid-countdown would
-        // move the marker off the thing the countdown is about.
-        if (run.pending) {
-            const p = run.pending;
-            if (!p.el.isConnected || !isVisible(p.el)) {
-                dbg('target for step ' + (run.idx + 1) + ' disappeared during the countdown — not clicking, looking again');
-                hlClear();
-                run.pending = null;
-                return;
-            }
-            const left = p.at - now;
-            if (left > 0) {
-                const secs = Math.ceil(left / 1000);
-                if (secs !== p.shown) {
-                    p.shown = secs;
-                    p.hl.setLabel(p.head + ' — clicking in ' + secs + 's');
-                }
-                return;
-            }
-            p.hl.setColor('#a6e3a1');
-            p.hl.stopPulse();
-            p.hl.setLabel(p.head + ' — CLICKED');
-            run.pending = null;
-            run.mark = p.hl;   // kept so the verdict can be written into the same label
-            beginClick(p.el, now);
-            return;
-        }
-
         // A click has been made and is being judged. Nothing else may run until it is
         // settled, or a step that quietly did nothing would be followed by a hunt for the
         // next one — which is how a rule used to report success having achieved nothing.
@@ -650,7 +617,6 @@
                 dbg('step ' + (run.idx + 1) + ' counted as done — ' +
                     (!stillThere ? 'the step stopped resolving' : "'" + moved + "' changed") +
                     ' [doc ' + document.readyState + ']');
-                if (run.mark) { try { run.mark.setLabel('Forget Me Not: click worked'); } catch (_) {} run.mark = null; }
                 commitClick(now);
                 return;
             }
@@ -663,13 +629,6 @@
                 dbg('step ' + (run.idx + 1) + ': ' + v.max + ' clicks across ' +
                     v.cands.map(descEl).join(', ') + ' and nothing moved on the page at all' +
                     ' — giving up on this step; re-teach it to record a better target');
-                if (run.mark) {
-                    try {
-                        run.mark.setColor('#f9e2af');
-                        run.mark.setLabel('Forget Me Not: clicked ' + v.max + '× — the page did not react');
-                    } catch (_) {}
-                    run.mark = null;
-                }
                 commitClick(now);
                 return;
             }
@@ -682,7 +641,6 @@
             run.deadline = Math.max(run.deadline, now + wait + VERIFY_WAIT[VERIFY_WAIT.length - 1] + 4000);
             dbg('step ' + (run.idx + 1) + ': nothing on the page changed — attempt ' + v.tries +
                 ' of ' + v.max + ' in ' + wait + 'ms');
-            if (run.mark) { try { run.mark.setColor('#f9e2af'); run.mark.setLabel('Forget Me Not: no reaction — retrying'); } catch (_) {} }
             return;
         }
 
@@ -742,22 +700,6 @@
         const el = resolveStep(step);
         if (!el || run.clicked.indexOf(el) !== -1) return;
 
-        if (run.debug) {
-            const head = 'Forget Me Not step ' + (run.idx + 1) + '/' + run.rule.steps.length + ': ' + step.label;
-            hlClear();
-            run.pending = {
-                el, head, shown: -1,
-                at: now + DEBUG_DELAY,
-                hl: hlPaint(el, '#f38ba8', head + ' — clicking in ' + (DEBUG_DELAY / 1000) + 's', true)
-            };
-            // The countdown must not be able to outlive the window it is running inside.
-            run.deadline = Math.max(run.deadline, now + DEBUG_DELAY + 3000);
-            dbg('MATCHED step ' + (run.idx + 1) + '/' + run.rule.steps.length + ' → ' + step.label +
-                ' — marked on the page, clicking in ' + (DEBUG_DELAY / 1000) + 's');
-            try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch (_) {}
-            return;
-        }
-
         beginClick(el, now);
     }
 
@@ -794,10 +736,7 @@
             // verify: the click currently being judged. noop: at least one step was
             // clicked to exhaustion without the page reacting, which changes what the
             // completion line is allowed to claim.
-            verify: null, noop: false, mark: null,
-            // Latched for the life of the window: toggling debug mid-countdown would
-            // otherwise strand a pending click that nothing is left to fire.
-            debug: isDebug(), pending: null
+            verify: null, noop: false
         };
         dbg('armed for ' + hit.key + ' (' + hit.rule.steps.length +
             (hit.rule.steps.length === 1 ? ' step' : ' steps') + '), watching ' +
@@ -879,17 +818,7 @@
         st.textContent = ':host { all: initial; }' +
             '.b { position: fixed; box-sizing: border-box; pointer-events: none;' +
             ' border: 2px solid var(--c); border-radius: 4px;' +
-            ' box-shadow: 0 0 0 1px rgba(0,0,0,0.85), 0 0 0 3px rgba(255,255,255,0.55), 0 0 10px 2px var(--c); }' +
-            // The debug marker has to be impossible to miss on a page you have never
-            // seen before, over markup of any colour — hence the width, the pulse, and
-            // a label that names the step rather than just drawing a box.
-            '.big { border-width: 6px; border-radius: 6px; animation: gs-pulse .7s ease-in-out infinite alternate; }' +
-            '@keyframes gs-pulse { from { box-shadow: 0 0 0 2px rgba(0,0,0,0.9), 0 0 0 6px rgba(255,255,255,0.7), 0 0 14px 4px var(--c); }' +
-            ' to { box-shadow: 0 0 0 2px rgba(0,0,0,0.9), 0 0 0 12px rgba(255,255,255,0.25), 0 0 34px 12px var(--c); } }' +
-            '.l { position: fixed; pointer-events: none; max-width: 60vw; color: #11111b;' +
-            ' font: 700 14px/1.3 system-ui, sans-serif; padding: 4px 9px; border-radius: 6px;' +
-            ' white-space: pre; overflow: hidden; text-overflow: ellipsis;' +
-            ' box-shadow: 0 3px 12px rgba(0,0,0,0.7); }';
+            ' box-shadow: 0 0 0 1px rgba(0,0,0,0.85), 0 0 0 3px rgba(255,255,255,0.55), 0 0 10px 2px var(--c); }';
         hlRoot.appendChild(st);
         (document.body || document.documentElement).appendChild(hlLayer);
         window.addEventListener('scroll', hlQueue, { passive: true, capture: true });
@@ -906,7 +835,6 @@
             const r = gone ? null : e.el.getBoundingClientRect();
             if (gone || (r.width < 1 && r.height < 1)) {
                 e.box.style.display = 'none';
-                if (e.lab) e.lab.style.display = 'none';
                 continue;
             }
             e.box.style.display = '';
@@ -914,155 +842,42 @@
             e.box.style.top = (r.top - 3) + 'px';
             e.box.style.width = (r.width + 6) + 'px';
             e.box.style.height = (r.height + 6) + 'px';
-            if (e.lab) {
-                // Above the target, unless the target is against the top of the viewport
-                // — a label drawn off-screen is the same as no label. The right edge
-                // needs the same treatment and did not have it: a control in the top
-                // right corner of a page (page chrome very often is) put its label
-                // straight off the side of the window, where the one line explaining what
-                // was about to be clicked could not be read at all.
-                e.lab.style.display = '';
-                e.lab.style.top = (r.top > 34 ? (r.top - 32) : (r.bottom + 8)) + 'px';
-                e.lab.style.left = '0px';
-                const w = e.lab.getBoundingClientRect().width || 0;
-                const max = Math.max(4, (window.innerWidth || 0) - w - 6);
-                e.lab.style.left = Math.min(max, Math.max(4, r.left - 3)) + 'px';
-            }
         }
     }
-    // Returns a handle so a countdown can be retitled in place rather than by tearing the
-    // marker down and rebuilding it, which would restart the pulse every second.
-    function hlPaint(el, color, label, big) {
-        if (!el) return null;
+    // Used by teaching (which element did I just pick?) and by testing a rule from
+    // Settings. Both want a plain box and neither wants a caption, so there is no label
+    // and no handle to retitle one with — that half existed for debug mode's countdown
+    // and went with it in v0.9.0.
+    function hlPaint(el, color) {
+        if (!el) return;
         hlEnsure();
         const c = color || '#a6e3a1';
         const box = document.createElement('div');
-        box.className = big ? 'b big' : 'b';
+        box.className = 'b';
         box.style.setProperty('--c', c);
         box.style.backgroundColor = c + '30';
         hlRoot.appendChild(box);
-        let lab = null;
-        if (label != null) {
-            lab = document.createElement('div');
-            lab.className = 'l';
-            lab.style.background = c;
-            lab.textContent = label;
-            hlRoot.appendChild(lab);
-        }
-        hlEntries.push({ el, box, lab });
+        hlEntries.push({ el, box });
         hlDraw();
-        return {
-            setLabel(t) { if (lab) lab.textContent = t; hlDraw(); },
-            setColor(nc) {
-                box.style.setProperty('--c', nc);
-                box.style.backgroundColor = nc + '30';
-                if (lab) lab.style.background = nc;
-            },
-            stopPulse() { box.className = 'b'; }
-        };
     }
     function hlClear() {
-        for (const e of hlEntries) { e.box.remove(); if (e.lab) e.lab.remove(); }
+        for (const e of hlEntries) e.box.remove();
         hlEntries.length = 0;
     }
 
-    // ---------------- Debug HUD ----------------
-    // Debug mode exists to answer one question that the script is otherwise structurally
-    // unable to answer: when a gate does not appear on a later visit, was it dismissed,
-    // or was it never shown? Normal operation is deliberately silent and logs only real
-    // events, so "Forget Me Not did nothing" and "Forget Me Not found nothing" look identical from
-    // the outside. In debug mode every decision is narrated, including the negative ones,
-    // and no click happens until the target has been on screen for DEBUG_DELAY with a
-    // marker on it — so what it was about to do is visible even when it is wrong.
+    // ---------------- Trace ----------------
+    // Normal operation is deliberately silent, and `gs_log` records only real events — so
+    // "Forget Me Not did nothing" and "Forget Me Not found nothing" look identical from
+    // the outside. dbg() closes that gap by narrating every decision, the negative ones
+    // included.
     //
-    // The HUD lives only in the top frame; frames relay their lines to it, because a gate
-    // in an embedded player may be in a frame too small to read anything in.
-    let hud = null, hudBody = null;
-    const HUD_MAX = 40;
-
-    function hudEnsure() {
-        if (hud && hud.isConnected) return;
-        hud = document.createElement('div');
-        hud.id = 'gs-hud';
-        hud.style.cssText = 'all: initial;';
-        const root = hud.attachShadow({ mode: 'open' });
-        const st = document.createElement('style');
-        st.textContent = ':host { all: initial; } * { box-sizing: border-box; }';
-        root.appendChild(st);
-
-        const wrap = document.createElement('div');
-        wrap.style.cssText = `
-            position: fixed; bottom: 12px; left: 12px; z-index: 2147483645;
-            width: 460px; max-width: 92vw; background: #11111b; color: #cdd6f4;
-            border: 2px solid #f38ba8; border-radius: 10px; padding: 8px 10px;
-            font: 12px/1.45 ui-monospace, Consolas, monospace;
-            box-shadow: 0 8px 30px rgba(0,0,0,0.7); display: flex; flex-direction: column; gap: 6px;
-        `;
-        const head = document.createElement('div');
-        head.style.cssText = 'display: flex; align-items: center; gap: 8px;';
-        const title = document.createElement('span');
-        title.style.cssText = 'flex: 1; font-weight: 700; color: #f38ba8;';
-        title.textContent = 'Forget Me Not — DEBUG (clicks delayed ' + (DEBUG_DELAY / 1000) + 's)';
-        const off = document.createElement('button');
-        off.textContent = 'Debug off';
-        off.style.cssText = 'border: none; border-radius: 6px; padding: 3px 8px; cursor: pointer;' +
-            'font: 700 11px system-ui, sans-serif; background: #45475a; color: #cdd6f4;';
-        // Turning debug off mid-countdown cancels the pending click rather than firing it
-        // early: with run.debug clear, the next tick re-resolves the same step and clicks
-        // it immediately, which is exactly normal behaviour resuming.
-        off.addEventListener('click', () => {
-            GM_setValue(DEBUG_KEY, false);
-            hudKill();
-            if (run) { run.debug = false; run.pending = null; hlClear(); }
-        });
-        const hide = document.createElement('button');
-        hide.textContent = 'Hide';
-        hide.style.cssText = off.style.cssText;
-        hide.addEventListener('click', hudKill);
-        head.append(title, hide, off);
-
-        hudBody = document.createElement('div');
-        hudBody.style.cssText = 'display: flex; flex-direction: column; gap: 1px;' +
-            'max-height: 34vh; overflow: auto; word-break: break-word;';
-
-        wrap.append(head, hudBody);
-        root.appendChild(wrap);
-        document.documentElement.appendChild(hud);
-    }
-    function hudKill() {
-        if (hud) { hud.remove(); hud = null; hudBody = null; }
-    }
-    // `frame` is flagged explicitly rather than inferred from the hostname: a frame on
-    // the SAME host as the page is the case where its lines are otherwise indistinguishable
-    // from the top frame's, and "armed … never matched" appearing twice with no way to
-    // tell which document meant which is worse than no line at all.
-    function hudLine(host, m, frame) {
-        hudEnsure();
-        const line = document.createElement('div');
-        const d = new Date();
-        const stamp = String(d.getMinutes()).padStart(2, '0') + ':' +
-            String(d.getSeconds()).padStart(2, '0') + '.' +
-            String(d.getMilliseconds()).padStart(3, '0');
-        line.textContent = stamp + '  ' + (frame ? '⧉ ' + (host || 'frame') + ': ' : '') + m;
-        line.style.cssText = 'color: ' + (/never|no rule|gave up|nothing|off\b/i.test(m) ? '#f9e2af' : '#a6adc8') + ';';
-        hudBody.appendChild(line);
-        while (hudBody.childNodes.length > HUD_MAX) hudBody.removeChild(hudBody.firstChild);
-        hudBody.scrollTop = hudBody.scrollHeight;
-    }
-    // Console as well as the HUD: the HUD dies with the document, and the most confusing
-    // gates are the ones that navigate as they close.
-    function dbg(m) {
-        // Recorded whether or not debug is on. The whole difficulty with this script has
-        // been that the broken case is the one with no observer in it: turning debug on to
-        // find out why something fails changes the timing enough to make it succeed, so
-        // the failure is never the thing being watched. The trace is the same narration
-        // written to storage, where it costs nothing and is there afterwards.
-        trace(m);
-        if (!isDebug()) return;
-        try { console.log('[Forget Me Not] ' + location.hostname + ' — ' + m); } catch (_) {}
-        if (isTop) hudLine(location.hostname, m, false);
-        else toTop({ type: 'dbg', m: String(m), host: location.hostname });
-    }
+    // It is written unconditionally, and that is the whole point. The recurring difficulty
+    // with this script was that the broken case is the one with no observer in it: turning
+    // a narration mode ON to find out why something failed changed the timing enough to
+    // make it succeed, so the failing case was never the one being watched. That is
+    // precisely what the old debug mode's five-second delay did, and it produced three
+    // rounds of misdiagnosis before the trace replaced it. Debug mode was removed in
+    // v0.9.0 having been made redundant; do not reintroduce a mode that alters timing.
 
     // Written straight to GM storage from whichever frame produced the line — GM storage
     // is shared across frames, so this needs no messaging and works in a frame whose
@@ -1070,7 +885,7 @@
     // document started, because "how long after the page began" is the number that has
     // mattered every single time.
     const T0 = Date.now();
-    function trace(m) {
+    function dbg(m) {
         try {
             const t = new Date();
             const stamp = String(t.getHours()).padStart(2, '0') + ':' +
@@ -1128,9 +943,6 @@
                 if (mine && mine.key === d.host) runTest(d.stepIndex | 0);
                 break;
             }
-            case 'dbg':
-                if (isTop && isDebug()) hudLine(String(d.host || ''), String(d.m || ''), true);
-                break;
             case 'test-result':
                 // Only positives are reported. Every frame that does not have the
                 // element would otherwise answer "no", and the first of those would win
@@ -1619,21 +1431,7 @@
         watchTxt2.textContent = 'seconds after each load';
         watchLabel.append(watchTxt1, watchIn, watchTxt2);
 
-        const dbgLabel = document.createElement('label');
-        dbgLabel.style.cssText = 'display: flex; align-items: center; gap: 6px; cursor: pointer; color: #f38ba8;';
-        dbgLabel.title = 'For testing. Marks the element it is about to click, waits ' +
-            (DEBUG_DELAY / 1000) + ' seconds, then clicks it — and narrates every decision, ' +
-            'including “no gate was found”, in a panel at the bottom left.';
-        dbgLabel.append(mkCheck(isDebug(), (v) => {
-            GM_setValue(DEBUG_KEY, !!v);
-            if (!v) { hudKill(); if (run) { run.debug = false; run.pending = null; hlClear(); } }
-            arm(true);
-        }));
-        const dbgTxt = document.createElement('span');
-        dbgTxt.textContent = 'Debug mode (show the target, wait ' + (DEBUG_DELAY / 1000) + 's, then click)';
-        dbgLabel.append(dbgTxt);
-
-        globalRow.append(onLabel, watchLabel, dbgLabel);
+        globalRow.append(onLabel, watchLabel);
 
         // --- rule list ---
         const list = document.createElement('div');
@@ -1883,13 +1681,6 @@
     if (isTop) {
         GM_registerMenuCommand('Forget Me Not: teach this page', startTeaching);
         GM_registerMenuCommand('Forget Me Not: settings', openSettings);
-        GM_registerMenuCommand('Forget Me Not: debug mode on/off', () => {
-            const v = !isDebug();
-            GM_setValue(DEBUG_KEY, v);
-            if (!v) { hudKill(); if (run) { run.debug = false; run.pending = null; hlClear(); } }
-            arm(true);
-            toast('Forget Me Not: debug mode ' + (v ? 'ON — clicks are delayed ' + (DEBUG_DELAY / 1000) + 's and marked on the page.' : 'off.'));
-        });
         GM_registerMenuCommand('Forget Me Not: forget this site', () => {
             const rules = getRules();
             const hit = ruleForHost(location.hostname);

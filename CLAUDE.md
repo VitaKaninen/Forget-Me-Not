@@ -404,38 +404,54 @@ Driving them from the browser console / a CDP `evaluate` is enough — teach via
 `__gsMenu["Forget Me Not: teach this page"]()`, click the gate, then click **Save** inside
 `document.getElementById('gs-popup').shadowRoot`, then reload and read `GM:gs_log`.
 
-## Debug mode (v0.2.0, added 2026-08-16 — temporary)
+## Debug mode is gone (v0.9.0, 2026-08-17) — do not bring it back
 
-Added because a taught site that no longer shows its gate is ambiguous: Forget Me Not
-dismissing it, the site not gating this visit, and the rule silently failing all look
-identical from the outside. `gs_debug` (GM, default false) turns on:
+Debug mode (v0.2.0) marked the element about to be clicked, waited 5s (`DEBUG_DELAY`), and
+narrated to a HUD. It was always scaffolding, and it was **actively harmful as a diagnostic**:
+the delay was long enough that failures stopped happening while you watched, so the case that
+actually broke was never the one being observed. That confound produced three rounds of
+misdiagnosis (v0.3.0, v0.4.0, v0.5.0 all blamed timing; the real causes were a missing effect
+test, a watch window measured from the wrong end, and two over-generous success signals).
 
-- a pulsing 6px marker + label on the element about to be clicked, then a **5s delay**
-  (`DEBUG_DELAY`) before `performClick`. Pending click lives in `run.pending`, and
-  `run.debug` is **latched at arm() time** so toggling mid-countdown cannot strand it.
-- a HUD (`#gs-hud`, top frame only, bottom left) narrating every decision **including the
-  negatives** — that is the whole point; the normal `gs_log` deliberately records only
-  real events. Frames relay via a `dbg` message and are prefixed `⧉ <host>:`.
+The trace replaced it and is strictly better: always on, costs nothing, and records the failing
+run rather than a run perturbed into succeeding. **Nothing in this script may alter timing in
+order to explain itself.** If a future subsystem needs narration, it writes trace lines.
 
-Traps found while building it:
+Removed: `DEBUG_KEY` / `DEBUG_DELAY` / `isDebug`, the whole Debug HUD section, `run.debug` /
+`run.pending` / `run.mark`, the `dbg` cross-frame message case, the Settings tickbox, the menu
+command, and `.big` / `.l` / `gs-pulse` CSS with the label-and-handle half of `hlPaint`.
+209 lines. `performClick`'s split from `tick` was kept — it is an improvement either way.
+
+- **The cleanup list in this file had gone stale, and following it literally would have gutted
+  the trace.** It said to delete "the `dbg` calls in `arm`/`tick`/`performClick`" — true when
+  written at v0.2.0, when `dbg()` only drove the HUD. The trace arrived at v0.6.0 and made
+  `dbg()` call `trace()` **unconditionally, before** the `isDebug()` early-return, so those 13
+  call sites had quietly become the trace's only source of content. `HANDOFF.md`'s newer
+  "keep the trace" is what caught it. **A cleanup list written when a feature was added goes
+  stale the moment any of that feature is repurposed — re-read the code before executing one.**
+- `trace()` was only ever called by `dbg()`, so the wrapper was deleted and `trace` took the
+  name `dbg`. All 13 call sites are untouched, which keeps the removal diff purely subtractive.
+- Resist adding a trace line "while you are in there". A MATCHED line was written and then
+  removed during this pass because `fireClick` already emits `clicked step N of M` — a
+  scaffolding-removal commit that also changes trace output is not attributable.
+
+Two lessons from building it are worth keeping, because they outlive it:
 
 - **The frame prefix cannot be inferred from the hostname.** A same-host iframe (which
   `fixture-iframe.html` is) produces "armed … / never matched" lines identical to the top
-  frame's. The relay flags `frame: true` explicitly.
-- **The countdown can outlive the watch window**, so creating a pending click pushes
-  `run.deadline` out to `now + DEBUG_DELAY + 3000`.
-- **A mid-countdown vanish must cancel, not fire.** `fixture-simple.html` hits this on
-  every load: the gate is in the served HTML, detached at parse time, so step 1 matches at
-  document-start and is gone milliseconds later. Verified in the HUD.
+  frame's. The trace prefixes `⧉` from `isTop` directly, which is why it survived the removal.
 - **Teaching from a frame is asynchronous.** A test that calls `startTeaching()` and then
   clicks in the frame synchronously records nothing — the `teach-on` broadcast has not
   landed. Looked exactly like a broken relay; it was the test. Wait a tick.
 
-## Cleanup owed
+## Testing traps that cost time in the v0.9.0 pass
 
-- **Remove debug mode when testing is done** — it is scaffolding, not a feature. Delete:
-  `DEBUG_KEY` / `DEBUG_DELAY` / `isDebug`, the whole "Debug HUD" section, the `dbg` calls
-  in `arm`/`tick`/`performClick`, the `run.debug` / `run.pending` branch in `tick()` (keep
-  `performClick` — the split is an improvement either way), the `.big` / `.l` CSS and the
-  label/handle half of `hlPaint`, the `dbg` message case, the Settings tickbox, and the
-  menu command. The README's "Debug mode" section goes with it.
+- **The teach-time highlight is bound to `mouseover`, not to clicks** (`onRecMove`). A probe
+  that fires a synthetic `el.click()` records the step correctly but never creates `#gs-hl` at
+  all — which reads exactly like "the highlight layer is broken". To exercise `hlPaint`,
+  dispatch a real `mouseover` with `composed: true` (needed to escape a shadow root).
+- **Do not assert on the popup's rendered text to check what was recorded.** A checkbox's step
+  is labelled `input (no text)`, not its caption, so a regex for the visible label reports a
+  false failure. Read `sessionStorage.gs_teach` — it is the actual recorded state.
+- The runner dismisses the gate on load, so a fixture opened with a rule already stored has no
+  gate left to teach against. Clear storage **and reload** before any teach-flow test.

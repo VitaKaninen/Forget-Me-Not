@@ -5,10 +5,18 @@ re-litigation, unless it says otherwise.
 
 ## Where things stand
 
-- **v0.7.0, working.** All five fixture scenarios pass, and the user has confirmed it works on
-  real Wikipedia with debug off — the "only works when debug is on" bug is finally dead. Root
-  cause was the success test reading the clicked element's own box resizing (web font arriving)
-  as proof the click worked; see the v0.7.0 section of `CLAUDE.md`.
+- **v0.9.0, working.** All five fixture scenarios re-verified 2026-08-17 after debug mode was
+  removed, driven from the Browser pane against `python -m http.server` on 8731:
+  `fixture-late.html?wire=8000&grow=1` (retried through the dead window across 5 attempts, no
+  false positive on the layout noise, committed at +10411ms on "the step stopped resolving",
+  panel collapsed), `fixture-simple.html`, `fixture-iframe.html` (frame armed and dismissed
+  independently, `⧉` prefix intact), `fixture-icon.html` (12s gate caught, `<path>` → `<div.x>`
+  candidate walk worked), `fixture-shadow.html` (checkbox committed on `'checked' changed`,
+  then the button that was disabled until ticked). Settings, teaching and the highlight layer
+  were checked separately.
+- The user confirmed v0.7.0 on real Wikipedia with debug off — the "only works when debug is
+  on" bug is dead. Root cause was the success test reading the clicked element's own box
+  resizing (web font arriving) as proof the click worked; see the v0.7.0 section of `CLAUDE.md`.
 - **The project has been re-scoped.** It is no longer "skip gates". It is "keep my site
   preferences without letting the site track me". Read **"Why the project exists"** at the top
   of `CLAUDE.md` before designing anything — it carries the replay ladder and the privacy
@@ -85,11 +93,10 @@ is path-independent (serves the cwd), so it needs no edit.
 
 ## Plan, in order
 
-**M0 — Delete debug mode.** It is scaffolding, `CLAUDE.md`'s "Cleanup owed" section lists
-exactly what to remove, and its blocker is now cleared (v0.7.0 is confirmed on real Wikipedia).
-The trace replaced it in practice — v0.7.0 was diagnosed entirely from trace plus fixture with
-debug never switched on. Do not build a new subsystem on top of code slated for deletion.
-Keep the trace; keep the `performClick` split.
+**M0 — Delete debug mode. ✅ DONE 2026-08-17, v0.9.0.** 209 lines removed; all five fixtures
+re-verified afterwards (see below). The trace and the `performClick` split were kept. Write-up
+in `CLAUDE.md`, including the trap that the "Cleanup owed" list it was executed from had gone
+stale and, followed literally, would have deleted the trace's only source of content.
 
 **M1 — Schema v2, new key names, NO migration.** `fmn_rules` holds
 `{v:2, clicks:{steps,…}, prefs:{…}}`; see `docs/PREFS.md` for the shape. The `gs_*` keys become

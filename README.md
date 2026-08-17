@@ -53,31 +53,26 @@ were reading — so teaching it once fixes every site that embeds the same playe
 - **Recent activity** — what actually fired, so a broken rule is distinguishable from a
   site that simply did not show its gate this time
 - Export / import rules as JSON
-- **Save trace** — downloads everything Forget Me Not has narrated recently as a `.txt`, kept
-  whether or not debug mode is on. This is the one to send when something does not work:
-  debug mode delays every click by five seconds, which is often enough to make a failure
-  stop happening, so the trace is the only record of the case that actually breaks.
+- **Save trace** — downloads everything Forget Me Not has narrated recently as a `.txt`.
+  This is the one to send when something does not work.
 
 Nothing appears on the page during normal browsing.
 
-## Debug mode
+## The trace
 
-**Forget Me Not: debug mode on/off** in the menu (or the red tickbox in Settings). It answers the
-one question the script is otherwise structurally unable to answer: when a gate does not
-appear on a later visit, was it dismissed, or was it never shown?
+The trace answers the one question the script is otherwise structurally unable to answer:
+when a gate does not appear on a later visit, was it dismissed, or was it never shown?
+`Recent activity` records only things that really happened; the trace records **every
+decision, including the negatives** — "no rule for this host", "armed for X, watching 15s",
+"watch window ended and step 1 NEVER MATCHED", and which signal made a click count as
+having worked. Lines from an embedded frame are prefixed `⧉ <host>:`, and each carries
+`+NNNNms` since that document started.
 
-With it on:
-
-- Every element Forget Me Not is about to click gets a **thick pulsing marker and a label**
-  naming the step, and is scrolled into view. It then **waits five seconds** before
-  clicking, so you can see what it picked and whether that is right.
-- A **panel at the bottom left** narrates every decision in the top frame, including the
-  negatives — "no rule for this host", "armed for X, watching 15s", "watch window ended and
-  step 1 NEVER MATCHED". Lines from an embedded frame are prefixed `⧉ <host>:`. Everything
-  also goes to the console, which survives the navigation a closing gate often triggers.
-- If the target vanishes mid-countdown, the click is **cancelled**, not fired late.
-
-Turning it off mid-countdown cancels the pending click; the next tick clicks normally.
+It is always on, and that is the point. Version 0.9.0 removed a "debug mode" that marked
+the target and waited five seconds before clicking — which delayed every click long enough
+that failures stopped happening while you watched, so the case that actually broke was
+never the one being observed. It caused three rounds of misdiagnosis before the trace
+replaced it. Nothing in this script should ever alter timing in order to explain itself.
 
 ## Behaviour worth knowing
 
