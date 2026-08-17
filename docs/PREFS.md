@@ -82,15 +82,26 @@ enough not to matter.
 
 The diff is presented as a list. Nothing is saved until confirmed.
 
+**The question this UI asks is "which of these did you mean to set?"** — not "which of these
+look risky?". That framing is load-bearing, not cosmetic. The diff necessarily mixes
+*user-caused* state (the preferences, which cost nothing to replay because the user would
+have clicked them anyway) with *site-caused* state (session ids, analytics keys, consent
+blobs — which the container was going to destroy, and which replay would resurrect). Only
+the user can separate those, and they can do it at a glance if asked the first question.
+Asked the second, they are being made to audit entropy, which they cannot do and should not
+have to. See the counterfactual section in `../CLAUDE.md`.
+
 - Short, enumerable-looking values arrive **pre-ticked**.
 - UUIDs, base64 blobs, long mixed-case tokens, 10+ digit numbers (timestamps), and keys whose
   *name* contains `id` / `uid` / `session` / `token` / `visitor` arrive **unticked**, with a
   one-line reason. Overridable in both directions.
-- The classifier annotates and pre-decides; it never blocks. The user is the gate.
+- The classifier annotates and pre-decides; it never blocks. The user is the gate. It is a
+  labour-saver for the "did you mean this?" question, not an authority on safety.
 
-Design rule from the privacy section: **prefer the smallest entry set that works.** Unticking
-and re-testing must be one click, because the intended workflow is to trim until it stops
-working and then step back one.
+**Prefer the smallest entry set that works.** Unticking and re-testing must be one click,
+because the intended workflow is to trim until it stops working and then step back one. The
+reason is robustness rather than privacy: fewer entries mean less to break at the site's next
+redesign and less to debug.
 
 ## Replay
 

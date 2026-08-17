@@ -32,8 +32,9 @@ runner is the *fallback*, for state that has no stored representation.
 1. **Effect** — write the DOM state directly (a class on `<html>`, a `data-theme` attribute).
    Nothing is *transmitted*. Covers most theme / layout / panel preferences, because those
    are nearly always "a class near the top of the document, and CSS does the rest".
-   Not the same as unobservable: the page's JS can read a class we set exactly as easily as
-   one it set itself. Rung 1 buys zero transmission, not zero visibility.
+   Not the same as unobservable — the page's JS can read a class we set exactly as easily as
+   one it set itself — but see the counterfactual section below before treating that as a
+   cost: the user was going to set that class by hand anyway.
 2. **Local storage** — write the key/value the site would have written, at document-start,
    for its own script to read.
 3. ~~**Cookie**~~ — **deliberately does not exist. Do not add it.** See below.
@@ -70,11 +71,37 @@ cookie would.
 
 > **The medium decides the blast radius. The value decides whether there is anything to leak.**
 
-And one that applies at every rung equally: **replay the smallest set of values that works.**
-A fresh container arriving with preferences already set is itself mildly distinctive, since
-most cookieless visitors have none — true at rung 1 as much as rung 3, so it is not a reason
-to prefer a rung, but it is a reason to keep the entry list minimal and to make unticking
-easy.
+### Measure the privacy cost against the right counterfactual
+
+An earlier version of this note argued that a fresh container arriving with preferences is
+distinctive, since most cookieless visitors have none. **That is the wrong baseline and the
+argument is withdrawn.** The counterfactual is not "a visitor with no preferences" — it is
+*the user, having clicked*. They were going to close the panel anyway, in every fresh
+container, and the site sees the identical class either way. Replay removes labour, not
+anonymity. There is no linkage delta.
+
+What genuinely differs is the **manner of arrival**, not the state: replayed preferences are
+present at document-start with no input events in front of them, where a click arrives
+seconds in behind real pointer events. A site that looked could tell those apart — but that
+reveals "this browser runs something that sets preferences", a static category bit, not an
+identifier, creating no cross-visit linkage, and userscript managers are detectable a dozen
+easier ways regardless. Not worth designing around. Do not let it shape the design again.
+
+**The line that does matter — and the one the review step exists for:**
+
+| | Was it going to happen anyway? | Replaying it |
+|---|---|---|
+| **User-caused** state — the preferences they set | Yes, they would click them | Adds nothing |
+| **Site-caused** state — session ids, analytics keys, consent blobs with an id inside | **No.** The container would have destroyed it | Adds tracking that would not otherwise exist |
+
+A snapshot diff contains **both rows mixed together**, because the site wrote its own keys
+during the same visit the user set their preferences. Separating them is the review's whole
+job, so the question it must ask the user is **"which of these did you mean to set?"** — not
+"which of these look risky?". The first is answerable at a glance; the second is not.
+
+Still keep the entry list minimal — **replay the smallest set of values that works** — but on
+robustness grounds, not privacy ones: fewer entries mean less to break at the site's next
+redesign, less to debug, and less chance of carrying something whose contents nobody checked.
 
 Full design: [`docs/PREFS.md`](docs/PREFS.md).
 
