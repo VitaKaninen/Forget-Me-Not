@@ -1,21 +1,21 @@
-# GateSkip
+# Forget Me Not
 
 A Violentmonkey userscript that dismisses "are you over 18" gates — and the cookie walls,
 "continue to site" interstitials and newsletter overlays that work the same way — but only
 on sites you have taught it, one at a time.
 
-Nothing is detected, guessed or heuristic. On a site GateSkip has never seen, it does
+Nothing is detected, guessed or heuristic. On a site Forget Me Not has never seen, it does
 nothing at all.
 
 ## How it works
 
 1. Land on a site that puts a gate in your way.
-2. Pick **GateSkip: teach this page** from the Violentmonkey menu.
+2. Pick **Forget Me Not: teach this page** from the Violentmonkey menu.
 3. Dismiss the gate exactly the way you normally would — tick the box, click the button.
-   Your clicks go through as usual; GateSkip just watches and lists what you clicked.
+   Your clicks go through as usual; Forget Me Not just watches and lists what you clicked.
 4. Press **Save**.
 
-From then on, GateSkip makes those same clicks for you, in order, for about fifteen seconds
+From then on, Forget Me Not makes those same clicks for you, in order, for about fifteen seconds
 after each page load on that site.
 
 Because your clicks are let through rather than intercepted, multi-step gates work: a
@@ -44,7 +44,7 @@ were reading — so teaching it once fixes every site that embeds the same playe
 
 ## Settings
 
-**GateSkip: settings** in the Violentmonkey menu:
+**Forget Me Not: settings** in the Violentmonkey menu:
 
 - master on/off switch, and how long to watch after each load
 - every rule, its recorded clicks, when it last fired, and per-rule enable / subdomains
@@ -53,7 +53,7 @@ were reading — so teaching it once fixes every site that embeds the same playe
 - **Recent activity** — what actually fired, so a broken rule is distinguishable from a
   site that simply did not show its gate this time
 - Export / import rules as JSON
-- **Save trace** — downloads everything GateSkip has narrated recently as a `.txt`, kept
+- **Save trace** — downloads everything Forget Me Not has narrated recently as a `.txt`, kept
   whether or not debug mode is on. This is the one to send when something does not work:
   debug mode delays every click by five seconds, which is often enough to make a failure
   stop happening, so the trace is the only record of the case that actually breaks.
@@ -62,13 +62,13 @@ Nothing appears on the page during normal browsing.
 
 ## Debug mode
 
-**GateSkip: debug mode on/off** in the menu (or the red tickbox in Settings). It answers the
+**Forget Me Not: debug mode on/off** in the menu (or the red tickbox in Settings). It answers the
 one question the script is otherwise structurally unable to answer: when a gate does not
 appear on a later visit, was it dismissed, or was it never shown?
 
 With it on:
 
-- Every element GateSkip is about to click gets a **thick pulsing marker and a label**
+- Every element Forget Me Not is about to click gets a **thick pulsing marker and a label**
   naming the step, and is scrolled into view. It then **waits five seconds** before
   clicking, so you can see what it picked and whether that is right.
 - A **panel at the bottom left** narrates every decision in the top frame, including the
@@ -88,7 +88,7 @@ Turning it off mid-countdown cancels the pending click; the next tick clicks nor
   the URL changes.
 - **Every click is checked, and retried if the page ignored it.** A control can be on
   screen, look completely normal and do nothing, because the site attached its handler
-  seconds after sending the markup. GateSkip watches for the page actually reacting —
+  seconds after sending the markup. Forget Me Not watches for the page actually reacting —
   the element vanishing, a checkbox flipping, a class or a size changing anywhere up its
   ancestor chain — and clicks again if nothing moved, up to eight times over about sixteen
   seconds. The gaps grow, because what it is waiting for is a script that will take as long
@@ -97,7 +97,7 @@ Turning it off mid-countdown cancels the pending click; the next tick clicks nor
   resolving", or which property changed. A verdict you cannot audit is indistinguishable
   from a wrong one.
 - **It says so when a click achieved nothing.** Running out of attempts with no reaction is
-  logged as exactly that, rather than as a dismissal. "GateSkip did nothing" and "GateSkip did
+  logged as exactly that, rather than as a dismissal. "Forget Me Not did nothing" and "Forget Me Not did
   something that had no effect" are different problems and now read differently.
 - **A gate that comes back is clicked again**, up to twice, for sites that tear the gate
   down and re-render it.
@@ -125,7 +125,7 @@ Then visit `http://localhost:8731/tests/fixture-simple.html` and use the browser
 ## Install
 
 Install from
-<https://raw.githubusercontent.com/VitaKaninen/GateSkip/main/GateSkip.user.js> — opening that
+<https://raw.githubusercontent.com/VitaKaninen/Forget-Me-Not/main/Forget-Me-Not.user.js> — opening that
 URL with Violentmonkey enabled offers the install, and `@updateURL` / `@downloadURL` in the
 header keep it updated from then on. A copy loaded from disk has no update URL recorded, so
 it never updates; reinstall from the link once to switch it over. Taught rules live in GM

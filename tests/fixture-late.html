@@ -1,6 +1,6 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>GateSkip fixture — late-wired gate + a panel toggle that stays put</title>
+<title>Forget Me Not fixture — late-wired gate + a panel toggle that stays put</title>
 <style>
   body { font: 15px/1.5 system-ui, sans-serif; margin: 40px; }
   #overlay { position: fixed; inset: 0; background: rgba(0,0,0,.75); display: flex;
@@ -19,7 +19,7 @@
 </style>
 
 <script src="gm-shim.js"></script>
-<script src="../GateSkip.user.js"></script>
+<script src="../Forget-Me-Not.user.js"></script>
 
 <h1 id="content">The real page content.</h1>
 <p>Dismissed correctly when the overlay is gone AND #panel has class "collapsed".</p>
@@ -44,7 +44,7 @@
   // visible and completely inert until their handlers arrive 2s later. That is the
   // ordinary shape of a server-rendered page that hydrates, and a single click fired at
   // document-start lands in the dead window and does nothing at all — while looking, from
-  // the outside, exactly like a click that worked. GateSkip must notice that the page did
+  // the outside, exactly like a click that worked. Forget Me Not must notice that the page did
   // not react and try again.
   // ?wire=8000 to push the handlers past the old 3.5s retry ladder. Wikipedia's panel
   // toggles bind at roughly that sort of delay, and a ladder that ran out before then

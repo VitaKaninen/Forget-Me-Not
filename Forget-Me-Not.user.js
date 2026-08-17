@@ -1,21 +1,21 @@
 // ==UserScript==
-// @name        GateSkip
+// @name        Forget Me Not
 // @namespace   https://github.com/VitaKaninen
-// @version     0.7.0
+// @version     0.8.0
 // @author      VitaKaninen
-// @description Teach it, once, which clicks dismiss a site's age gate, cookie wall or unwanted panel — then it does that for you on every later visit. Nothing is guessed and nothing fires until you have taught it.
+// @description Teach it, once, which clicks dismiss a site's age gate, cookie wall or unwanted panel — then it remembers, and does that for you on every later visit. Nothing is guessed and nothing fires until you have taught it.
 // @match       *://*/*
 // @grant       GM_setValue
 // @grant       GM_getValue
 // @grant       GM_deleteValue
 // @grant       GM_registerMenuCommand
 // @run-at      document-start
-// @updateURL   https://raw.githubusercontent.com/VitaKaninen/GateSkip/main/GateSkip.user.js
-// @downloadURL https://raw.githubusercontent.com/VitaKaninen/GateSkip/main/GateSkip.user.js
+// @updateURL   https://raw.githubusercontent.com/VitaKaninen/Forget-Me-Not/main/Forget-Me-Not.user.js
+// @downloadURL https://raw.githubusercontent.com/VitaKaninen/Forget-Me-Not/main/Forget-Me-Not.user.js
 // ==/UserScript==
 
 // The @updateURL / @downloadURL pair above only resolves once this folder is pushed to
-// github.com/VitaKaninen/GateSkip with `main` as the default branch — same layout as the
+// github.com/VitaKaninen/Forget-Me-Not with `main` as the default branch — same layout as the
 // other scripts in Monkey Scripts. Until then Violentmonkey's update check 404s, which is
 // harmless (it keeps the installed copy) but means nothing arrives on its own.
 
@@ -61,7 +61,7 @@
     const TRACE_MAX = 600;            // trace lines kept; a few page loads' worth
     // Bump with @version. A trace file that does not say which build produced it is worth
     // much less when it arrives days later.
-    const VERSION = '0.7.0';
+    const VERSION = '0.8.0';
     const DEBUG_DELAY = 5000;         // debug mode: how long to show the target first
 
     // Rule shape:
@@ -650,7 +650,7 @@
                 dbg('step ' + (run.idx + 1) + ' counted as done — ' +
                     (!stillThere ? 'the step stopped resolving' : "'" + moved + "' changed") +
                     ' [doc ' + document.readyState + ']');
-                if (run.mark) { try { run.mark.setLabel('GateSkip: click worked'); } catch (_) {} run.mark = null; }
+                if (run.mark) { try { run.mark.setLabel('Forget Me Not: click worked'); } catch (_) {} run.mark = null; }
                 commitClick(now);
                 return;
             }
@@ -666,7 +666,7 @@
                 if (run.mark) {
                     try {
                         run.mark.setColor('#f9e2af');
-                        run.mark.setLabel('GateSkip: clicked ' + v.max + '× — the page did not react');
+                        run.mark.setLabel('Forget Me Not: clicked ' + v.max + '× — the page did not react');
                     } catch (_) {}
                     run.mark = null;
                 }
@@ -682,7 +682,7 @@
             run.deadline = Math.max(run.deadline, now + wait + VERIFY_WAIT[VERIFY_WAIT.length - 1] + 4000);
             dbg('step ' + (run.idx + 1) + ': nothing on the page changed — attempt ' + v.tries +
                 ' of ' + v.max + ' in ' + wait + 'ms');
-            if (run.mark) { try { run.mark.setColor('#f9e2af'); run.mark.setLabel('GateSkip: no reaction — retrying'); } catch (_) {} }
+            if (run.mark) { try { run.mark.setColor('#f9e2af'); run.mark.setLabel('Forget Me Not: no reaction — retrying'); } catch (_) {} }
             return;
         }
 
@@ -695,13 +695,13 @@
                     ' — the rest of the sequence never appeared');
             }
             // The single most useful line in debug mode. If the gate did not show up on
-            // this visit, this says so explicitly, which is what separates "GateSkip
+            // this visit, this says so explicitly, which is what separates "Forget Me Not
             // dismissed it" from "the site did not gate you this time".
             dbg(run.done
                 ? 'watch window ended — the sequence had run'
                 : (run.idx > 0
                     ? 'watch window ended after step ' + run.idx + ' of ' + run.rule.steps.length + ' — the rest never appeared'
-                    : 'watch window ended and step 1 NEVER MATCHED — no gate was found on this page, so nothing here was clicked by GateSkip'));
+                    : 'watch window ended and step 1 NEVER MATCHED — no gate was found on this page, so nothing here was clicked by Forget Me Not'));
             disarm();
             return;
         }
@@ -711,7 +711,7 @@
         // before its handler exists: the click does nothing, the rule counts itself done,
         // and the gate the user actually sees is never touched. Caught by
         // tests/fixture-simple.html, whose gate is in the served HTML and re-attached
-        // 400ms later — GateSkip reported success while the overlay was still up.
+        // 400ms later — Forget Me Not reported success while the overlay was still up.
         //
         // The restart condition is "the gate went away and came back", plus the weaker
         // "step 1 now resolves to a node we never clicked". Both are needed and neither
@@ -743,7 +743,7 @@
         if (!el || run.clicked.indexOf(el) !== -1) return;
 
         if (run.debug) {
-            const head = 'GateSkip step ' + (run.idx + 1) + '/' + run.rule.steps.length + ': ' + step.label;
+            const head = 'Forget Me Not step ' + (run.idx + 1) + '/' + run.rule.steps.length + ': ' + step.label;
             hlClear();
             run.pending = {
                 el, head, shown: -1,
@@ -783,7 +783,7 @@
         if (!hit || !hit.rule.steps || !hit.rule.steps.length) {
             // Only the top frame says this. Every ad and analytics frame on the page
             // would otherwise report its own "no rule", burying the one line that matters.
-            if (isTop) dbg('no rule for ' + location.hostname + ' — GateSkip is doing nothing on this page');
+            if (isTop) dbg('no rule for ' + location.hostname + ' — Forget Me Not is doing nothing on this page');
             return;
         }
 
@@ -970,7 +970,7 @@
     // Debug mode exists to answer one question that the script is otherwise structurally
     // unable to answer: when a gate does not appear on a later visit, was it dismissed,
     // or was it never shown? Normal operation is deliberately silent and logs only real
-    // events, so "GateSkip did nothing" and "GateSkip found nothing" look identical from
+    // events, so "Forget Me Not did nothing" and "Forget Me Not found nothing" look identical from
     // the outside. In debug mode every decision is narrated, including the negative ones,
     // and no click happens until the target has been on screen for DEBUG_DELAY with a
     // marker on it — so what it was about to do is visible even when it is wrong.
@@ -1002,7 +1002,7 @@
         head.style.cssText = 'display: flex; align-items: center; gap: 8px;';
         const title = document.createElement('span');
         title.style.cssText = 'flex: 1; font-weight: 700; color: #f38ba8;';
-        title.textContent = 'GateSkip — DEBUG (clicks delayed ' + (DEBUG_DELAY / 1000) + 's)';
+        title.textContent = 'Forget Me Not — DEBUG (clicks delayed ' + (DEBUG_DELAY / 1000) + 's)';
         const off = document.createElement('button');
         off.textContent = 'Debug off';
         off.style.cssText = 'border: none; border-radius: 6px; padding: 3px 8px; cursor: pointer;' +
@@ -1059,7 +1059,7 @@
         // written to storage, where it costs nothing and is there afterwards.
         trace(m);
         if (!isDebug()) return;
-        try { console.log('[GateSkip] ' + location.hostname + ' — ' + m); } catch (_) {}
+        try { console.log('[Forget Me Not] ' + location.hostname + ' — ' + m); } catch (_) {}
         if (isTop) hudLine(location.hostname, m, false);
         else toTop({ type: 'dbg', m: String(m), host: location.hostname });
     }
@@ -1092,7 +1092,7 @@
     // tag is checked on every message and the payload shape is validated; the worst a
     // hostile page could do with a forged message is offer to add a rule for itself,
     // which still needs the Save button pressed.
-    const TAG = '__gateskip__';
+    const TAG = '__forgetmenot__';
     const isTop = window === window.top;
 
     function broadcast(msg, win) {
@@ -1303,7 +1303,7 @@
 
         const title = document.createElement('div');
         title.style.cssText = 'font-weight: 700; color: #f9e2af;';
-        title.textContent = 'GateSkip — recording';
+        title.textContent = 'Forget Me Not — recording';
 
         popMsg = document.createElement('div');
         popMsg.style.cssText = 'white-space: pre-wrap; word-break: break-word;';
@@ -1464,7 +1464,7 @@
             (teachState.steps.length === 1 ? ' click)' : ' clicks)'));
         const n = teachState.steps.length;
         endTeaching();
-        toast('GateSkip: saved ' + n + (n === 1 ? ' click' : ' clicks') + ' for ' + host + '.');
+        toast('Forget Me Not: saved ' + n + (n === 1 ? ' click' : ' clicks') + ' for ' + host + '.');
     }
 
     // ---------------- Toast ----------------
@@ -1507,7 +1507,7 @@
     function noteTestFound(key) {
         if (!testWait || testWait.key !== key || testWait.found) return;
         testWait.found = true;
-        toast('GateSkip: found step 1 of the ' + key + ' rule — highlighted in green.');
+        toast('Forget Me Not: found step 1 of the ' + key + ' rule — highlighted in green.');
     }
 
     // Asks every frame, including this one, and treats "nobody answered" as the negative.
@@ -1516,7 +1516,7 @@
         broadcast({ type: 'test', host: key, stepIndex: 0 });
         setTimeout(() => {
             if (testWait && testWait.key === key && !testWait.found) {
-                toast('GateSkip: the ' + key + ' rule matches nothing on this page right now.');
+                toast('Forget Me Not: the ' + key + ' rule matches nothing on this page right now.');
             }
             testWait = null;
         }, 800);
@@ -1562,11 +1562,11 @@
 
         const title = document.createElement('div');
         title.style.cssText = 'font-size: 15px; font-weight: 700; color: #89b4fa;';
-        title.textContent = 'GateSkip — Settings';
+        title.textContent = 'Forget Me Not — Settings';
 
         const desc = document.createElement('div');
         desc.style.cssText = 'font-size: 12px; color: #9399b2; line-height: 1.45;';
-        desc.textContent = 'GateSkip does nothing on a site until you teach it there. ' +
+        desc.textContent = 'Forget Me Not does nothing on a site until you teach it there. ' +
             '"Teach this page" records the clicks you make to dismiss a gate; afterwards it makes those ' +
             'same clicks for you, for about ' + Math.round(watchDefault() / 1000) + ' seconds after each load.';
 
@@ -1596,7 +1596,7 @@
         onLabel.title = 'Master switch. Off, no rule fires anywhere, and nothing is forgotten.';
         onLabel.append(mkCheck(isOn(), (v) => { GM_setValue(ON_KEY, !!v); if (v) arm(true); else disarm(); }));
         const onTxt = document.createElement('span');
-        onTxt.textContent = 'GateSkip is on';
+        onTxt.textContent = 'Forget Me Not is on';
         onLabel.append(onTxt);
 
         const watchLabel = document.createElement('label');
@@ -1648,7 +1648,7 @@
                 const empty = document.createElement('div');
                 empty.style.cssText = 'color: #6c7086; font-size: 12px; padding: 8px;';
                 empty.textContent = 'No sites taught yet. Open a site with a gate, then pick ' +
-                    '“GateSkip: teach this page” from the Violentmonkey menu.';
+                    '“Forget Me Not: teach this page” from the Violentmonkey menu.';
                 list.appendChild(empty);
                 return;
             }
@@ -1786,7 +1786,7 @@
         // fails is the one nobody is watching, and switching debug on to watch it changes
         // the timing enough to make it pass.
         const traceBtn = smallBtn('Save trace', '#cba6f7', '#11111b');
-        traceBtn.title = 'Download everything GateSkip has narrated recently — including ' +
+        traceBtn.title = 'Download everything Forget Me Not has narrated recently — including ' +
             'with debug off — as a .txt file.';
         traceBtn.addEventListener('click', () => {
             const lines = readJson(TRACE_KEY, []);
@@ -1795,7 +1795,7 @@
                 status.textContent = 'The trace is empty — load a page with a rule on it first.';
                 return;
             }
-            const text = 'GateSkip trace — ' + new Date().toString() + '\n' +
+            const text = 'Forget Me Not trace — ' + new Date().toString() + '\n' +
                 'script v' + VERSION + ', ' + lines.length + ' lines\n' +
                 'user agent: ' + navigator.userAgent + '\n' +
                 ''.padEnd(70, '-') + '\n' + lines.join('\n') + '\n';
@@ -1803,7 +1803,7 @@
                 const url = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = 'gateskip-trace-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19) + '.txt';
+                a.download = 'forgetmenot-trace-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19) + '.txt';
                 (document.body || document.documentElement).appendChild(a);
                 a.click();
                 a.remove();
@@ -1881,24 +1881,24 @@
 
     // ---------------- Boot ----------------
     if (isTop) {
-        GM_registerMenuCommand('GateSkip: teach this page', startTeaching);
-        GM_registerMenuCommand('GateSkip: settings', openSettings);
-        GM_registerMenuCommand('GateSkip: debug mode on/off', () => {
+        GM_registerMenuCommand('Forget Me Not: teach this page', startTeaching);
+        GM_registerMenuCommand('Forget Me Not: settings', openSettings);
+        GM_registerMenuCommand('Forget Me Not: debug mode on/off', () => {
             const v = !isDebug();
             GM_setValue(DEBUG_KEY, v);
             if (!v) { hudKill(); if (run) { run.debug = false; run.pending = null; hlClear(); } }
             arm(true);
-            toast('GateSkip: debug mode ' + (v ? 'ON — clicks are delayed ' + (DEBUG_DELAY / 1000) + 's and marked on the page.' : 'off.'));
+            toast('Forget Me Not: debug mode ' + (v ? 'ON — clicks are delayed ' + (DEBUG_DELAY / 1000) + 's and marked on the page.' : 'off.'));
         });
-        GM_registerMenuCommand('GateSkip: forget this site', () => {
+        GM_registerMenuCommand('Forget Me Not: forget this site', () => {
             const rules = getRules();
             const hit = ruleForHost(location.hostname);
-            if (!hit) { toast('GateSkip: nothing taught for ' + location.hostname + '.'); return; }
+            if (!hit) { toast('Forget Me Not: nothing taught for ' + location.hostname + '.'); return; }
             delete rules[hit.key];
             saveRules(rules);
             log('rule deleted for ' + hit.key);
             disarm();
-            toast('GateSkip: forgot ' + hit.key + '.');
+            toast('Forget Me Not: forgot ' + hit.key + '.');
         });
     }
 

@@ -1,4 +1,4 @@
-# GateSkip — project notes
+# Forget Me Not — project notes
 
 Violentmonkey userscript. Teach-by-clicking dismissal of age gates / cookie walls, opt-in
 per site. The shared rules in `../CLAUDE.md` (version bumps, commit + push after every
@@ -7,7 +7,7 @@ note) apply here too.
 
 ## Shape of the thing
 
-Single file, `GateSkip.user.js`, one IIFE, `@run-at document-start`, runs in **every
+Single file, `Forget-Me-Not.user.js`, one IIFE, `@run-at document-start`, runs in **every
 frame** (no `@noframes`). Sections in order: storage → utilities → selector building →
 selector resolution → runner → SPA watcher → highlight layer → cross-frame messaging →
 teaching → popup → toast → testing → settings → boot.
@@ -23,7 +23,7 @@ costs every site preference: sidebar closed, dark theme, wide layout — all for
 every visit, because the only place a site knows to keep them is storage that just got
 deleted.
 
-**GateSkip's job is to hold those preferences itself and reapply them, without the site
+**Forget Me Not's job is to hold those preferences itself and reapply them, without the site
 learning anything.** Dismissing gates is one case of that, not the point of it. The click
 runner is the *fallback*, for state that has no stored representation.
 
@@ -52,7 +52,7 @@ runner is the *fallback*, for state that has no stored representation.
   of readers share and which distinguishes nobody — an earlier version of this note argued
   otherwise and was wrong. The hazard is wholesale replay of a captured blob whose contents
   you have not looked at, which is precisely why capture is snapshot-and-review.
-- **An invariant beats a heuristic.** "GateSkip never writes a cookie; nothing it does is
+- **An invariant beats a heuristic.** "Forget Me Not never writes a cookie; nothing it does is
   transmitted to the host" is one sentence, checkable by grepping for `document.cookie`.
   The alternative — "we transmit only what our entropy classifier judged safe" — is a thing
   you must keep trusting on every future site forever. The project exists to avoid trusting
@@ -243,7 +243,7 @@ never moves, the retries run, and the click eventually lands on a wired handler.
 first load has the noise in it. Anything that says "works on refresh, not on a fresh tab" is
 about **load-time noise being read as a result**, not about how long the script waits.
 
-Second tell from the same report: closing the panel by hand and reopening it made GateSkip
+Second tell from the same report: closing the panel by hand and reopening it made Forget Me Not
 close it. That is the vanish-and-return restart path, which can only run once `run.done` is
 set — i.e. proof that a click had already been committed on first load, silently and wrongly.
 **"It did nothing" plus "the restart path works" means a false positive, not a missed match.**
@@ -360,7 +360,7 @@ that.
 Attaching a listener with `document.getElementById(...)` **after** detaching the element's
 container returns `null` — the element is no longer in the document. Wire listeners first,
 or query inside the detached subtree. Same applies to `shadowRoot.getElementById`. Both
-fixtures had this and it looked exactly like a GateSkip bug (recorded the click, gate did
+fixtures had this and it looked exactly like a Forget Me Not bug (recorded the click, gate did
 not close).
 
 ## Testing
@@ -401,12 +401,12 @@ gate before the teach flow could record it, which reads as a broken recorder. `l
 **and reload** between fixtures; clearing without reloading is too late, the rule already armed.
 
 Driving them from the browser console / a CDP `evaluate` is enough — teach via
-`__gsMenu["GateSkip: teach this page"]()`, click the gate, then click **Save** inside
+`__gsMenu["Forget Me Not: teach this page"]()`, click the gate, then click **Save** inside
 `document.getElementById('gs-popup').shadowRoot`, then reload and read `GM:gs_log`.
 
 ## Debug mode (v0.2.0, added 2026-08-16 — temporary)
 
-Added because a taught site that no longer shows its gate is ambiguous: GateSkip
+Added because a taught site that no longer shows its gate is ambiguous: Forget Me Not
 dismissing it, the site not gating this visit, and the rule silently failing all look
 identical from the outside. `gs_debug` (GM, default false) turns on:
 

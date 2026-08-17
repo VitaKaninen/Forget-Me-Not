@@ -17,7 +17,26 @@ re-litigation, unless it says otherwise.
 - **The design for the new subsystem is written**: `docs/PREFS.md`. It is complete enough to
   build from.
 
-## Step 0 — the rename. Do this FIRST, before any code.
+## Step 0 — the rename. ✅ DONE 2026-08-17 (local); steps 5–7 are the user's.
+
+Local rename is complete and committed as v0.8.0. What actually happened, and what is left:
+
+- Steps 1–4 done. The folder move was done by moving `GateSkip`'s **contents** (including
+  `.git`) into the already-existing `Forget-Me-Not` folder, not by renaming the directory —
+  the new folder already held a copy of this file and was a live session's cwd. History is
+  intact; `git log` still reaches v0.2.0.
+- **Step 5 (create the GitHub repo, `remote set-url`, push) has NOT been done.** `origin`
+  still points at `VitaKaninen/GateSkip`, so `@updateURL` currently 404s — harmless, but
+  nothing auto-updates until the repo exists.
+- Steps 6 and 7 (remove the old script from Violentmonkey before installing the new one;
+  delete the old repo and gist) remain the user's, in that order.
+- One judgement call beyond the written plan: `TAG = '__gateskip__'` → `'__forgetmenot__'`.
+  It is the cross-frame postMessage discriminator, ephemeral and never persisted, so it is
+  not in the same class as the `gs_*` keys below. The one way it can bite is an old and a
+  new copy installed simultaneously in different frames of the same page — which step 6
+  exists to prevent.
+
+The original plan follows, kept for the record.
 
 The project is being renamed **GateSkip → Forget Me Not**. Do it before writing anything new,
 because the old name is baked into paths, headers and URLs, and fixing that afterwards is the

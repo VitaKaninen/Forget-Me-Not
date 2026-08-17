@@ -1,4 +1,4 @@
-// Minimal GM_* shim so GateSkip.user.js can be loaded by a plain page for testing.
+// Minimal GM_* shim so Forget-Me-Not.user.js can be loaded by a plain page for testing.
 // GM storage is persistent and shared across frames, so localStorage is the right stand-in
 // (sessionStorage would lose rules on reload, which is exactly what the tests check).
 // Menu commands have nowhere to go in a plain page, so they are parked on window for the
