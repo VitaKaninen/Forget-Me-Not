@@ -15,6 +15,62 @@ teaching → popup → toast → testing → settings → boot.
 Storage is GM: `gs_rules` (host → rule), `gs_on`, `gs_watch`, `gs_log`. In-progress
 teaching lives in **sessionStorage** (`gs_teach`), top frame only.
 
+## Why the project exists (settled 2026-08-17 — read before designing anything)
+
+The user browses with a container extension that gives every tab a fresh container and
+destroys it, with all cookies, on close. Nothing is logged in. That buys anonymity, and it
+costs every site preference: sidebar closed, dark theme, wide layout — all forgotten on
+every visit, because the only place a site knows to keep them is storage that just got
+deleted.
+
+**GateSkip's job is to hold those preferences itself and reapply them, without the site
+learning anything.** Dismissing gates is one case of that, not the point of it. The click
+runner is the *fallback*, for state that has no stored representation.
+
+### The replay ladder — take the highest rung that works
+
+1. **Effect** — write the DOM state directly (a class on `<html>`, a `data-theme` attribute).
+   Nothing leaves the browser. Covers most theme / layout / panel preferences, because those
+   are nearly always "a class near the top of the document, and CSS does the rest".
+2. **Local storage** — write the key/value the site would have written, at document-start,
+   for its own script to read.
+3. ~~**Cookie**~~ — **deliberately does not exist. Do not add it.** See below.
+4. **Click** — today's runner. For state with no persisted representation at all.
+
+### Rung 3 is out, and the reasoning is not "cookies are icky"
+
+- **It would not work here anyway.** Cookies are blocked at the browser level for these
+  sites, so `document.cookie = '…'` silently no-ops and reads back empty — a feature that
+  fails indistinguishably from "the site ignored our value", on the only machine it runs on.
+- **Ephemerality would not save us.** Container deletion protects you only while nothing
+  re-creates the value. Replay re-creates it, same bytes, every visit, out of GM storage the
+  container cannot reach. That is the definition of a supercookie; rung 3 would defeat the
+  deletion, not be limited by it.
+- **An invariant beats a heuristic.** "GateSkip never writes a cookie; nothing it does is
+  transmitted to the host" is one sentence, checkable by grepping for `document.cookie`.
+  The alternative — "we transmit only what our entropy classifier judged safe" — is a thing
+  you must keep trusting on every future site forever. The project exists to avoid trusting
+  things.
+
+Known cost, accepted: **server-rendered preferences are permanently out of scope.** The
+white-flash-then-dark-theme case can only be fixed after the flash, and a server-enforced
+age gate falls to rung 4. Also note a userscript cannot touch outgoing request headers at
+all — if that ever becomes necessary it is an extension-shaped problem, so keep the seam clean.
+
+### Dropping rung 3 does NOT remove the need for value review
+
+The transport was never what mattered; the value was. A UUID replayed into localStorage,
+read by the site's own script and posted home, re-establishes tracking exactly as well as a
+cookie would.
+
+> **The medium decides the blast radius. The value decides whether there is anything to leak.**
+
+So rungs 1 and 2 keep the classifier: capture is **snapshot-and-review**, never automatic —
+the user sets a site up how they like it, hits "Remember this site", and gets a list where
+short enumerable values arrive pre-ticked and UUIDs / long tokens / base64 blobs / timestamps
+arrive unticked with a warning. Automatic capture is rejected outright: it would silently
+persist and replay the identifiers the container is there to destroy.
+
 ## Decisions that are not obvious from the code
 
 **Rules are keyed on the hostname of the document the gate is in — not the top page's.**
