@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        Forget Me Not
 // @namespace   https://github.com/VitaKaninen
-// @version     0.9.0
+// @version     0.10.0
 // @author      VitaKaninen
 // @description Teach it, once, which clicks dismiss a site's age gate, cookie wall or unwanted panel — then it remembers, and does that for you on every later visit. Nothing is guessed and nothing fires until you have taught it.
 // @match       *://*/*
@@ -28,12 +28,37 @@
     // That is deliberate: teach the vendor's widget once and every site that embeds it
     // is fixed, and no frame ever has to work out what the top page's hostname is
     // (cross-origin, it cannot).
-    const RULES_KEY = 'gs_rules';     // GM: { "<host>": Rule }
-    const ON_KEY = 'gs_on';           // GM: false to switch the whole thing off
-    const WATCH_KEY = 'gs_watch';     // GM: default watch window, ms
-    const LOG_KEY = 'gs_log';         // GM: [{ t, host, m }] — newest first, capped
-    const TRACE_KEY = 'gs_trace';     // GM: [line] — the narration of every decision, always on
-    const TEACH_KEY = 'gs_teach';     // sessionStorage (top frame): teaching in progress
+    const RULES_KEY = 'fmn_rules';    // GM: { "<host>": Rule }
+    const ON_KEY = 'fmn_on';          // GM: false to switch the whole thing off
+    const WATCH_KEY = 'fmn_watch';    // GM: default watch window, ms
+    const LOG_KEY = 'fmn_log';        // GM: [{ t, host, m }] — newest first, capped
+    const TRACE_KEY = 'fmn_trace';    // GM: [line] — the narration of every decision, always on
+    const TEACH_KEY = 'fmn_teach';    // sessionStorage (top frame): teaching in progress
+
+    // Schema v2. A host entry holds N INDEPENDENT click sequences plus one prefs block:
+    //
+    //   { v: 2, host, subdomains, enabled,
+    //     clicks: [ Seq, … ],
+    //     prefs:  { captured, entries: [ … ] } }
+    //
+    //   Seq: { id, label, steps: [Step], watchMs, fires, lastFired, created }
+    //
+    // `clicks` is an ARRAY because one host routinely needs more than one unrelated
+    // dismissal: an age gate on the landing page, and some other popup that only appears
+    // three pages deep. Those are not steps of one sequence — a sequence runs in order and
+    // stops when a step stops resolving, so folding the deep popup in as "step 3" means it
+    // never fires on the landing page and the landing gate blocks it everywhere else.
+    // Each sequence therefore arms on its own and hunts for its own first step; the one
+    // whose step 1 is actually on this page is the one that runs. No URL matching is
+    // involved, which is deliberate — the page's own content selects the sequence, so
+    // nothing breaks when the site reorganises its paths.
+    //
+    // There is NO migration from v1 and no compatibility read path. Rules cost seconds to
+    // re-teach; see HANDOFF.md, and do not reintroduce one.
+    const SCHEMA_V = 2;
+
+    // The v1 keys, deleted once so they do not sit in GM storage forever. Not read first.
+    const DEAD_KEYS = ['gs_rules', 'gs_on', 'gs_watch', 'gs_log', 'gs_trace', 'gs_debug'];
 
     // How long to keep looking. Measured from the last point the page reached, not from
     // document-start — see extendWatch(). A gate that arrives with a vendor script is
@@ -60,7 +85,7 @@
     const TRACE_MAX = 600;            // trace lines kept; a few page loads' worth
     // Bump with @version. A trace file that does not say which build produced it is worth
     // much less when it arrives days later.
-    const VERSION = '0.9.0';
+    const VERSION = '0.10.0';
 
     // Rule shape:
     //   { host, subdomains, enabled, watchMs, steps: [Step], created, lastFired, fires }
@@ -88,6 +113,44 @@
         const n = parseInt(GM_getValue(WATCH_KEY, WATCH_DEFAULT), 10);
         return (n > 0 && n <= 120000) ? n : WATCH_DEFAULT;
     };
+
+    // Every sequence of a rule, always an array. Written as an accessor rather than
+    // reading `.clicks` inline so a malformed entry degrades to "this host does nothing"
+    // instead of throwing inside the runner's interval, where nothing would report it.
+    const seqsOf = (rule) => (rule && Array.isArray(rule.clicks)) ? rule.clicks : [];
+
+    // Ids are only ever compared to each other, never parsed, and only have to be unique
+    // within one host — a sequence is identified in the log and in Settings by its label.
+    let seqCounter = 0;
+    const newSeq = (steps, label) => ({
+        id: 's' + Date.now().toString(36) + (seqCounter++).toString(36),
+        label: label || '',
+        steps: steps || [],
+        watchMs: 0, fires: 0, lastFired: 0, created: Date.now()
+    });
+
+    // A sequence with no label is described by one of its steps, because that is what the
+    // user recognises ("I am over 18") — not by an id they have never seen. Prefer the
+    // first step that actually has a caption: a gate's step 1 is very often a checkbox,
+    // whose label is the useless "input (no text)", while the confirm button next to it
+    // carries the words the user would use to describe the whole thing.
+    function seqName(seq, i) {
+        if (seq.label) return seq.label;
+        const steps = seq.steps || [];
+        const named = steps.find(s => s && s.text) || steps[0];
+        return (named && named.label) || ('sequence ' + (i + 1));
+    }
+
+    // One-time removal of the v1 keys. Deleting rather than reading: rules are cheap to
+    // re-teach and a compatibility path is a permanent liability. Guarded by its own key
+    // so it costs one GM read per document once it has run.
+    (function dropDeadKeys() {
+        try {
+            if (GM_getValue('fmn_v1_cleared', false) === true) return;
+            for (const k of DEAD_KEYS) { try { GM_deleteValue(k); } catch (_) {} }
+            GM_setValue('fmn_v1_cleared', true);
+        } catch (_) {}
+    })();
 
     function log(m) {
         // A silent script that stops working is indistinguishable from a site that
@@ -518,7 +581,7 @@
         // readyState is worth saying out loud: a click that lands while the document is
         // still 'loading' or 'interactive' is the one most likely to hit markup whose
         // handler has not been attached yet, and that is invisible from anywhere else.
-        dbg('clicked step ' + (run.idx + 1) + ' of ' + run.rule.steps.length +
+        dbg('clicked step ' + (run.idx + 1) + ' of ' + run.seq.steps.length +
             ' [doc ' + document.readyState + ']' +
             (v.max > 1 ? ' (attempt ' + v.tries + ' of ' + v.max + ')' : '') +
             (v.hit !== v.el ? ' — on ' + descEl(v.hit) + ' around the ' + descEl(v.el) + ' taught'
@@ -557,21 +620,26 @@
         // is simply lost, and the gate coming back reads as a gate that never left.
         // Introduced by the verify/retry cycle; the old code clicked and completed in one
         // step, so the done-branch always saw it.
-        if (!resolveStep(run.rule.steps[0])) run.vanished = true;
+        if (!resolveStep(run.seq.steps[0])) run.vanished = true;
 
-        if (run.idx >= run.rule.steps.length) {
+        if (run.idx >= run.seq.steps.length) {
             run.done = true;
+            // Counters live on the SEQUENCE, not the host: with several sequences per host
+            // a shared counter could not answer "is this particular one still working?",
+            // which is the only question the number is for. Located by id rather than by
+            // index — Settings can delete a sequence while a run holds a reference to it.
             const rules = getRules();
-            if (rules[run.key]) {
-                rules[run.key].lastFired = Date.now();
-                rules[run.key].fires = (rules[run.key].fires || 0) + 1;
+            const seq = seqsOf(rules[run.key]).find(s => s.id === run.seq.id);
+            if (seq) {
+                seq.lastFired = Date.now();
+                seq.fires = (seq.fires || 0) + 1;
                 saveRules(rules);
             }
-            const n = run.rule.steps.length;
+            const n = run.seq.steps.length;
             log(run.noop
-                ? ('ran all ' + n + (n === 1 ? ' click' : ' clicks') +
-                   ', but at least one of them changed nothing on the page')
-                : ('dismissed the gate (' + n + (n === 1 ? ' click)' : ' clicks)')));
+                ? ('ran all ' + n + (n === 1 ? ' click' : ' clicks') + ' of “' + run.name +
+                   '”, but at least one of them changed nothing on the page')
+                : ('dismissed “' + run.name + '” (' + n + (n === 1 ? ' click)' : ' clicks)')));
             dbg('sequence complete — still watching until the window ends, in case the page puts the gate back');
             // Not disarmed — the window stays open for the re-render case below. The
             // deadline is what ends it.
@@ -597,7 +665,7 @@
                 // Re-resolve rather than reusing the node: between attempts the page may
                 // have re-rendered the control, and clicking a detached copy of it is a
                 // guaranteed no-op that would burn the remaining attempts.
-                const fresh = resolveStep(run.rule.steps[run.idx]);
+                const fresh = resolveStep(run.seq.steps[run.idx]);
                 if (!fresh) {
                     dbg('step ' + (run.idx + 1) + ' went away before the retry — taking that as the click having worked');
                     commitClick(now);
@@ -612,7 +680,7 @@
             // resolving (whole-subtree teardown leaves the measured node detached, and a
             // detached node's parent class tells you nothing).
             const moved = whatMoved(v.before, clickState(v.hit));
-            const stillThere = resolveStep(run.rule.steps[run.idx]);
+            const stillThere = resolveStep(run.seq.steps[run.idx]);
             if (moved || !stillThere) {
                 dbg('step ' + (run.idx + 1) + ' counted as done — ' +
                     (!stillThere ? 'the step stopped resolving' : "'" + moved + "' changed") +
@@ -623,7 +691,7 @@
 
             if (v.tries >= v.max) {
                 run.noop = true;
-                log('step ' + (run.idx + 1) + ' of ' + run.rule.steps.length +
+                log('step ' + (run.idx + 1) + ' of ' + run.seq.steps.length +
                     ' was clicked ' + v.max + ' times (' + v.cands.map(descEl).join(', ') +
                     ') and the page never reacted — re-teaching this step will record a better target');
                 dbg('step ' + (run.idx + 1) + ': ' + v.max + ' clicks across ' +
@@ -649,7 +717,7 @@
             // landed, so the rule is real but no longer complete. Silence there would be
             // exactly the "did it break or was there no gate?" ambiguity worth avoiding.
             if (!run.done && run.idx > 0) {
-                log('gave up after step ' + run.idx + ' of ' + run.rule.steps.length +
+                log('gave up after step ' + run.idx + ' of ' + run.seq.steps.length +
                     ' — the rest of the sequence never appeared');
             }
             // The single most useful line in debug mode. If the gate did not show up on
@@ -658,7 +726,7 @@
             dbg(run.done
                 ? 'watch window ended — the sequence had run'
                 : (run.idx > 0
-                    ? 'watch window ended after step ' + run.idx + ' of ' + run.rule.steps.length + ' — the rest never appeared'
+                    ? 'watch window ended after step ' + run.idx + ' of ' + run.seq.steps.length + ' — the rest never appeared'
                     : 'watch window ended and step 1 NEVER MATCHED — no gate was found on this page, so nothing here was clicked by Forget Me Not'));
             disarm();
             return;
@@ -683,7 +751,7 @@
         // never disappears is a rule that is wrong, not a rule that should try harder.
         if (run.done) {
             if (run.restarts >= MAX_RESTARTS) return;
-            const first = resolveStep(run.rule.steps[0]);
+            const first = resolveStep(run.seq.steps[0]);
             if (!first) { run.vanished = true; return; }
             if (!run.vanished && run.clicked.indexOf(first) !== -1) return;
             run.restarts++;
@@ -696,7 +764,7 @@
             dbg('the page put the gate back — running the sequence again (restart ' + run.restarts + ')');
         }
 
-        const step = run.rule.steps[run.idx];
+        const step = run.seq.steps[run.idx];
         const el = resolveStep(step);
         if (!el || run.clicked.indexOf(el) !== -1) return;
 
@@ -722,25 +790,32 @@
             return;
         }
         const hit = ruleForHost(location.hostname);
-        if (!hit || !hit.rule.steps || !hit.rule.steps.length) {
+        const seqs = seqsOf(hit && hit.rule).filter(s => s.steps && s.steps.length);
+        if (!hit || !seqs.length) {
             // Only the top frame says this. Every ad and analytics frame on the page
             // would otherwise report its own "no rule", burying the one line that matters.
             if (isTop) dbg('no rule for ' + location.hostname + ' — Forget Me Not is doing nothing on this page');
             return;
         }
 
-        const watchMs = (hit.rule.watchMs > 0) ? hit.rule.watchMs : watchDefault();
+        // v0.10.0 runs only the first sequence, exactly as v0.9.0 ran the only one there
+        // was. Arming all of them is the next commit; keeping the shape change inert means
+        // a fixture that breaks here can only be the reshape.
+        const seq = seqs[0];
+        const watchMs = (seq.watchMs > 0) ? seq.watchMs : watchDefault();
         run = {
-            rule: hit.rule, key: hit.key, idx: 0, done: false, clicked: [], restarts: 0, vanished: false,
+            seq, name: seqName(seq, 0), key: hit.key,
+            idx: 0, done: false, clicked: [], restarts: 0, vanished: false,
             deadline: Date.now() + watchMs, settleUntil: 0, obs: null, timer: null,
             // verify: the click currently being judged. noop: at least one step was
             // clicked to exhaustion without the page reacting, which changes what the
             // completion line is allowed to claim.
             verify: null, noop: false
         };
-        dbg('armed for ' + hit.key + ' (' + hit.rule.steps.length +
-            (hit.rule.steps.length === 1 ? ' step' : ' steps') + '), watching ' +
-            Math.round(watchMs / 1000) + 's — fired ' + (hit.rule.fires || 0) + ' time(s) before');
+        dbg('armed for ' + hit.key + ' — “' + run.name + '” (' + seq.steps.length +
+            (seq.steps.length === 1 ? ' step' : ' steps') + '), watching ' +
+            Math.round(watchMs / 1000) + 's — fired ' + (seq.fires || 0) + ' time(s) before' +
+            (seqs.length > 1 ? ' [' + (seqs.length - 1) + ' more sequence(s) not yet armed]' : ''));
         run.timer = setInterval(tick, 200);
         try {
             run.obs = new MutationObserver(tick);
@@ -761,7 +836,7 @@
     // fine; it was being asked to watch during the wrong ten seconds.
     function extendWatch(why) {
         if (!run || run.done) return;
-        const ms = (run.rule.watchMs > 0) ? run.rule.watchMs : watchDefault();
+        const ms = (run.seq.watchMs > 0) ? run.seq.watchMs : watchDefault();
         const until = Date.now() + ms;
         if (until <= run.deadline) return;
         run.deadline = until;
@@ -940,7 +1015,7 @@
                 // which is the ordinary rule lookup, so an "include subdomains" rule is
                 // still answered by the subdomain it actually covers.
                 const mine = ruleForHost(location.hostname);
-                if (mine && mine.key === d.host) runTest(d.stepIndex | 0);
+                if (mine && mine.key === d.host) runTest(d.seqIndex | 0, d.stepIndex | 0);
                 break;
             }
             case 'test-result':
@@ -1262,14 +1337,15 @@
         const rules = getRules();
         const prev = rules[host];
         rules[host] = {
+            v: SCHEMA_V,
             host,
             subdomains: !!teachState.subdomains,
             enabled: true,
-            watchMs: (prev && prev.watchMs) || 0,
-            steps: teachState.steps,
-            created: (prev && prev.created) || Date.now(),
-            lastFired: 0,
-            fires: 0
+            // v0.10.0 still replaces, exactly as v0.9.0 did. Appending — so a popup taught
+            // three pages into a site does not wipe the landing page's gate — is the next
+            // commit, along with the runner that can actually arm more than one.
+            clicks: [newSeq(teachState.steps)],
+            prefs: (prev && prev.prefs) || null
         };
         saveRules(rules);
         log('rule saved for ' + host + ' (' + teachState.steps.length +
@@ -1304,10 +1380,12 @@
     // ---------------- Testing a rule against this page ----------------
     let testWait = null;   // { key, found } while a broadcast test is outstanding
 
-    function runTest(stepIndex) {
+    function runTest(seqIndex, stepIndex) {
         const hit = ruleForHost(location.hostname);
         if (!hit) return;
-        const step = hit.rule.steps[stepIndex] || hit.rule.steps[0];
+        const seq = seqsOf(hit.rule)[seqIndex];
+        if (!seq || !seq.steps || !seq.steps.length) return;
+        const step = seq.steps[stepIndex] || seq.steps[0];
         const el = resolveStep(step);
         if (!el) return;                     // silence; see the 'test-result' comment
         hlClear();
@@ -1319,16 +1397,16 @@
     function noteTestFound(key) {
         if (!testWait || testWait.key !== key || testWait.found) return;
         testWait.found = true;
-        toast('Forget Me Not: found step 1 of the ' + key + ' rule — highlighted in green.');
+        toast('Forget Me Not: found step 1 of “' + testWait.name + '” — highlighted in green.');
     }
 
     // Asks every frame, including this one, and treats "nobody answered" as the negative.
-    function startTest(key) {
-        testWait = { key, found: false };
-        broadcast({ type: 'test', host: key, stepIndex: 0 });
+    function startTest(key, seqIndex, name) {
+        testWait = { key, name, found: false };
+        broadcast({ type: 'test', host: key, seqIndex: seqIndex | 0, stepIndex: 0 });
         setTimeout(() => {
             if (testWait && testWait.key === key && !testWait.found) {
-                toast('Forget Me Not: the ' + key + ' rule matches nothing on this page right now.');
+                toast('Forget Me Not: “' + name + '” matches nothing on this page right now.');
             }
             testWait = null;
         }, 800);
@@ -1472,17 +1550,13 @@
                 name.textContent = (r.subdomains ? '*.' : '') + key;
                 name.title = key + (r.subdomains ? ' and every subdomain' : ' (this host only)');
 
+                const seqs = seqsOf(r);
                 const meta = document.createElement('span');
                 meta.style.cssText = 'font-size: 11px; color: #9399b2; white-space: nowrap;';
-                meta.textContent = r.steps.length + (r.steps.length === 1 ? ' click · ' : ' clicks · ') +
-                    'last fired ' + fmtWhen(r.lastFired);
-                meta.title = 'Fired ' + (r.fires || 0) + ' time(s) since it was taught.';
-
-                const testBtn = smallBtn('Test', '#89b4fa');
-                testBtn.title = 'Look for this rule’s first click on the page behind this dialog — in the page itself and in every frame on it.';
-                testBtn.addEventListener('click', () => startTest(key));
+                meta.textContent = seqs.length + (seqs.length === 1 ? ' sequence' : ' sequences');
 
                 const delBtn = smallBtn('Delete', '#f38ba8');
+                delBtn.title = 'Remove this host and every sequence taught for it.';
                 delBtn.addEventListener('click', () => {
                     const rr = getRules();
                     delete rr[key];
@@ -1492,16 +1566,59 @@
                     arm(true);
                 });
 
-                head.append(en, name, meta, testBtn, delBtn);
+                head.append(en, name, meta, delBtn);
 
+                // One block per sequence. They are independent — a host can hold the age
+                // gate from its landing page and an unrelated popup from three pages in —
+                // so each gets its own Test, its own Delete, and its own counters.
                 const steps = document.createElement('div');
-                steps.style.cssText = 'display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: #a6adc8;';
-                r.steps.forEach((s, i) => {
-                    const line = document.createElement('div');
-                    line.style.cssText = 'overflow: hidden; text-overflow: ellipsis; white-space: nowrap;';
-                    line.textContent = (i + 1) + '. ' + s.label;
-                    line.title = s.path.map(p => p.s).join('  ≫  ');
-                    steps.appendChild(line);
+                steps.style.cssText = 'display: flex; flex-direction: column; gap: 6px; font-size: 11px; color: #a6adc8;';
+                seqs.forEach((seq, si) => {
+                    const block = document.createElement('div');
+                    block.style.cssText = 'display: flex; flex-direction: column; gap: 2px;' +
+                        'border-left: 2px solid #45475a; padding-left: 8px;';
+
+                    const shead = document.createElement('div');
+                    shead.style.cssText = 'display: flex; align-items: center; gap: 6px;';
+                    const sname = document.createElement('span');
+                    sname.style.cssText = 'flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;' +
+                        'white-space: nowrap; color: #cdd6f4; font-weight: 700;';
+                    sname.textContent = seqName(seq, si);
+                    const smeta = document.createElement('span');
+                    smeta.style.cssText = 'color: #9399b2; white-space: nowrap;';
+                    smeta.textContent = seq.steps.length + (seq.steps.length === 1 ? ' click · ' : ' clicks · ') +
+                        'last fired ' + fmtWhen(seq.lastFired);
+                    smeta.title = 'Fired ' + (seq.fires || 0) + ' time(s) since it was taught.';
+
+                    const sTest = smallBtn('Test', '#89b4fa');
+                    sTest.title = 'Look for this sequence’s first click on the page behind this dialog — in the page itself and in every frame on it.';
+                    sTest.addEventListener('click', () => startTest(key, si, seqName(seq, si)));
+
+                    const sDel = smallBtn('✕', '#f38ba8');
+                    sDel.title = 'Delete just this sequence, leaving the others alone.';
+                    sDel.addEventListener('click', () => {
+                        const rr = getRules();
+                        const list2 = seqsOf(rr[key]);
+                        const at = list2.findIndex(x => x.id === seq.id);
+                        if (at !== -1) list2.splice(at, 1);
+                        // A host with no sequences left and no prefs is just clutter.
+                        if (!list2.length && !(rr[key] && rr[key].prefs)) delete rr[key];
+                        saveRules(rr);
+                        log('sequence “' + seqName(seq, si) + '” deleted for ' + key);
+                        drawList();
+                        arm(true);
+                    });
+                    shead.append(sname, smeta, sTest, sDel);
+                    block.appendChild(shead);
+
+                    seq.steps.forEach((s, i) => {
+                        const line = document.createElement('div');
+                        line.style.cssText = 'overflow: hidden; text-overflow: ellipsis; white-space: nowrap;';
+                        line.textContent = (i + 1) + '. ' + s.label;
+                        line.title = s.path.map(p => p.s).join('  ≫  ');
+                        block.appendChild(line);
+                    });
+                    steps.appendChild(block);
                 });
 
                 const subRow = document.createElement('label');
@@ -1645,16 +1762,23 @@
             try { parsed = JSON.parse(ioBox.value); } catch (_) { status.style.color = '#f38ba8'; status.textContent = 'That is not valid JSON.'; return; }
             if (!parsed || typeof parsed !== 'object') { status.style.color = '#f38ba8'; status.textContent = 'Expected an object of host → rule.'; return; }
             const rules = getRules();
-            let n = 0;
+            let n = 0, skipped = 0;
             for (const k of Object.keys(parsed)) {
                 const r = parsed[k];
-                if (!r || !Array.isArray(r.steps) || !r.steps.length) continue;
-                rules[k] = Object.assign({ host: k, subdomains: false, enabled: true, watchMs: 0, created: Date.now(), lastFired: 0, fires: 0 }, r);
+                // v2 only. A v1 export (flat `steps`) is rejected rather than converted —
+                // there is no migration path anywhere in this script by design, and
+                // silently accepting one here would be the compatibility path by the back
+                // door. Re-teaching is seconds.
+                const seqs = seqsOf(r).filter(s => s && Array.isArray(s.steps) && s.steps.length);
+                if (!seqs.length) { skipped++; continue; }
+                rules[k] = Object.assign({ v: SCHEMA_V, host: k, subdomains: false, enabled: true, prefs: null },
+                                         r, { clicks: seqs.map(s => Object.assign(newSeq([]), s)) });
                 n++;
             }
             saveRules(rules);
-            status.style.color = '#a6e3a1';
-            status.textContent = 'Merged ' + n + ' rule(s).';
+            status.style.color = skipped ? '#f9e2af' : '#a6e3a1';
+            status.textContent = 'Merged ' + n + ' rule(s).' +
+                (skipped ? ' Skipped ' + skipped + ' with no v2 “clicks” array — re-teach those.' : '');
             io.style.display = 'none';
             drawList();
             arm(true);

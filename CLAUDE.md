@@ -12,8 +12,27 @@ frame** (no `@noframes`). Sections in order: storage → utilities → selector 
 selector resolution → runner → SPA watcher → highlight layer → cross-frame messaging →
 teaching → popup → toast → testing → settings → boot.
 
-Storage is GM: `gs_rules` (host → rule), `gs_on`, `gs_watch`, `gs_log`. In-progress
-teaching lives in **sessionStorage** (`gs_teach`), top frame only.
+Storage is GM: `fmn_rules` (host → rule), `fmn_on`, `fmn_watch`, `fmn_log`, `fmn_trace`.
+In-progress teaching lives in **sessionStorage** (`fmn_teach`), top frame only. The `gs_*`
+keys are v1 and are deleted once, on first run, by `dropDeadKeys()` — they are never read.
+
+**Schema v2 (v0.10.0).** A host entry is
+`{ v:2, host, subdomains, enabled, clicks: [Seq], prefs: {captured, entries} }`, where
+`Seq` is `{ id, label, steps:[Step], watchMs, fires, lastFired, created }`.
+
+**`clicks` is an ARRAY, and that is the whole point of v2.** One host routinely needs more
+than one unrelated dismissal — an age gate on the landing page, and some other popup that
+only shows up three pages deep. Those are *not* steps of one sequence: a sequence runs in
+order and stops when a step stops resolving, so folding the deep popup in as "step 3" means
+it never fires on the landing page, and the landing gate blocks it everywhere else. Each
+sequence arms independently and hunts for its own first step, so **the page's own content
+selects which sequence runs** — no URL matching is involved, deliberately, because then
+nothing breaks when the site reorganises its paths. Counters (`fires`/`lastFired`) live on
+the sequence, since "is this one still working?" is the only question they answer.
+
+**There is no migration from v1 and no compatibility read path anywhere**, including the
+Settings importer, which rejects a v1 export rather than converting it. See HANDOFF.md —
+rule loss is explicitly not a cost on this project and must not appear in a design argument.
 
 ## Why the project exists (settled 2026-08-17 — read before designing anything)
 
@@ -267,7 +286,7 @@ drops the part that was noise.
 
 ## The trace: the broken case is the one with no observer in it
 
-`dbg()` writes to `gs_trace` (GM, capped at `TRACE_MAX`) **whether or not debug is on**, and
+`dbg()` writes to `fmn_trace` (GM, capped at `TRACE_MAX`) **whether or not debug is on**, and
 Settings has **Save trace** (Blob download) / **Clear trace**. This exists because of the
 structural problem that made this bug take four attempts: turning debug on to find out why
 something fails changes the timing enough to make it succeed, so the failing case was never
@@ -387,11 +406,24 @@ trace instead).
 on `<html>` plus ancestor boxes settling — beat v0.5.0), `?grow=<ms>` (the taught control's own
 box changes size once, early, for a reason unrelated to the click — beat v0.6.0). They compose.
 
-**Driving a fixture does not require the teach flow.** Writing `GM:gs_rules` straight into
-`localStorage` is quicker and makes the test say what it is testing — a step is just
+**Driving a fixture does not require the teach flow.** Writing `GM:fmn_rules` straight into
+`localStorage` is quicker and makes the test say what it is testing. A step is just
 `{path:[{s,l}], text, tag, label}`, `text` is the lowercased visible text (`''` skips the text
 filter), and one `path` entry per shadow root crossed. Then `location.reload()` and read
-`GM:gs_trace`.
+`GM:fmn_trace`. Remember the v2 wrapper — steps go inside a **sequence**, inside `clicks`:
+
+```js
+localStorage.setItem("GM:fmn_rules", JSON.stringify({
+  localhost: { v: 2, host: "localhost", subdomains: false, enabled: true, prefs: null,
+    clicks: [{ id: "s1", label: "", created: Date.now(), watchMs: 0, fires: 0, lastFired: 0,
+      steps: [{ path: [{ s: "#enter", l: "#enter" }], text: "yes, i am over 18",
+                tag: "button", label: "Yes, I am over 18" }] }] }
+}));
+```
+
+`label: ""` is fine — `seqName()` falls back to the first step that has a `text`, so the log
+line reads `dismissed “Yes, I am over 18”`. It prefers a step *with* a caption on purpose: a
+gate's step 1 is very often a checkbox, whose label is the useless `input (no text)`.
 
 **All fixtures share one host (`localhost`) and rules are keyed by host, so there is exactly
 one rule slot for all of them.** Teaching a second fixture silently overwrites the first, and
@@ -402,7 +434,15 @@ gate before the teach flow could record it, which reads as a broken recorder. `l
 
 Driving them from the browser console / a CDP `evaluate` is enough — teach via
 `__gsMenu["Forget Me Not: teach this page"]()`, click the gate, then click **Save** inside
-`document.getElementById('gs-popup').shadowRoot`, then reload and read `GM:gs_log`.
+`document.getElementById('gs-popup').shadowRoot`, then reload and read `GM:fmn_log`.
+
+**`fixture-simple.html` legitimately logs a RESTART about half the time, and it is not a bug.**
+It detaches its gate at parse time and re-attaches it at 400ms, so whether you get one
+dismissal or "dismissed → the page replaced the gate → dismissed" depends purely on when the
+first click lands relative to that — and the Browser pane throttles timers in a hidden tab,
+which moves it. Before calling it a regression, count the `armed for` lines in the trace: **one
+means the restart path fired correctly; two would mean the double-arm bug** (`armedUrl` guard),
+which is a real bug this project has had. The end state (`gateGone`) is the thing to assert on.
 
 ## Debug mode is gone (v0.9.0, 2026-08-17) — do not bring it back
 
@@ -452,6 +492,6 @@ Two lessons from building it are worth keeping, because they outlive it:
   dispatch a real `mouseover` with `composed: true` (needed to escape a shadow root).
 - **Do not assert on the popup's rendered text to check what was recorded.** A checkbox's step
   is labelled `input (no text)`, not its caption, so a regex for the visible label reports a
-  false failure. Read `sessionStorage.gs_teach` — it is the actual recorded state.
+  false failure. Read `sessionStorage.fmn_teach` — it is the actual recorded state.
 - The runner dismisses the gate on load, so a fixture opened with a rule already stored has no
   gate left to teach against. Clear storage **and reload** before any teach-flow test.

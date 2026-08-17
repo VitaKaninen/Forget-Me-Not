@@ -59,6 +59,6 @@
   window.__verdict = () => ({
     gateGone: !document.getElementById('overlay'),
     sidebarGone: !document.getElementById('sidebar'),
-    log: JSON.parse(localStorage.getItem('GM:gs_log') || '[]').slice(0, 5).map(e => e.m)
+    log: JSON.parse(localStorage.getItem('GM:fmn_log') || '[]').slice(0, 5).map(e => e.m)
   });
 </script>
