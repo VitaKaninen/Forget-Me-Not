@@ -68,6 +68,29 @@
     }, 100);
   }
 
+  // ?grow=<ms> (default 300 when bare) is the narrower, nastier cousin of churn: the
+  // taught control's own bounding box changes once, early, for a reason that has nothing
+  // to do with being clicked — a web font arriving, a stylesheet finishing, an icon
+  // decoding. A success test that treats "the element's box is a different size" as
+  // evidence reads that as the click having worked. This is the difference between a
+  // cold first load and a reload, which is why the bug reproduces on a fresh tab and
+  // vanishes on refresh: the second time round the font is already cached and the box
+  // never moves.
+  //
+  // Written as an inline style ON THE BUTTON on purpose. A first attempt put a class on
+  // #panel instead, which moved the button's box AND changed an ancestor's class list —
+  // and an ancestor gaining a class is precisely what a working panel-collapse looks
+  // like, so no rule could ever tell the two apart. The mechanism being reproduced here
+  // is layout noise, so it has to be layout and nothing else.
+  const GROW = new URLSearchParams(location.search).get('grow');
+  if (GROW) {
+    setTimeout(() => {
+      const b = document.getElementById('hide');
+      b.style.padding = '6px 14px';
+      b.style.fontSize = '17px';
+    }, Number(GROW) > 1 ? Number(GROW) : 300);
+  }
+
   setTimeout(() => {
     const ov = document.getElementById('overlay');
     ov.querySelector('#enter').addEventListener('click', () => ov.remove());

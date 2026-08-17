@@ -91,7 +91,9 @@ step counts as done only once the page demonstrably moved.
 - **What counts as "the page moved" is the hard part, and one level up is not enough.**
   `clickState` looks at the element (gone / visible / checked / disabled / aria-*) *and*
   `ancestry()` — class **and size** for 6 levels up. Sizes matter because a section
-  collapsing is often the only consequence there is. First cut compared the element and its
+  collapsing is often the only consequence there is. *(Both halves of that sentence were
+  wrong and are gone: ancestor sizes went in v0.6.0, the element's own size in v0.7.0 —
+  layout noise during load reads as a result. Do not put either back.)* First cut compared the element and its
   immediate parent, which caught Wikipedia's panel toggle (class lands on the parent) and
   missed `fixture-late.html`'s (grandparent) — and the miss is not harmless: it burned all
   four attempts on a *toggle*, so the panel ended up clicked back open. **A false negative
@@ -128,6 +130,44 @@ signal, since collapsing or hiding is the consequence.
   misdiagnosis happened; do not remove this.
 - Reproduce with `tests/fixture-late.html?wire=8000&churn=1`. v0.5.0 fails it while logging
   "dismissed the gate (2 clicks)" with the gate still up.
+
+## The last over-generous signal was the element's own size (v0.7.0, 2026-08-17)
+
+Same false positive as v0.6.0, one field further in. `clickState` still compared the clicked
+element's own `size`, on the reasoning that "collapsing or being hidden is the consequence".
+But a control's box also moves for reasons that have nothing to do with being clicked — a web
+font swapping in, a stylesheet finishing, an icon decoding — and every one of those lands in
+the first few hundred milliseconds, which is exactly the window the first click is fired and
+judged in. Verdict: `counted as done — 'size' changed`, log line "dismissed the gate (1
+click)", step written off, control still sitting there working.
+
+**The user's symptom named the cause precisely and it was not timing:** first load on a fresh
+tab does nothing, *reloading the same page works*. A reload has the font in cache, so the box
+never moves, the retries run, and the click eventually lands on a wired handler. Only the cold
+first load has the noise in it. Anything that says "works on refresh, not on a fresh tab" is
+about **load-time noise being read as a result**, not about how long the script waits.
+
+Second tell from the same report: closing the panel by hand and reopening it made GateSkip
+close it. That is the vanish-and-return restart path, which can only run once `run.done` is
+set — i.e. proof that a click had already been committed on first load, silently and wrongly.
+**"It did nothing" plus "the restart path works" means a false positive, not a missed match.**
+
+`size` is now `collapsed` (width or height under 1px), which keeps the part that was meant and
+drops the part that was noise.
+
+- **Reproduce with `tests/fixture-late.html?wire=8000&grow=1`.** v0.6.0 fails it at +615ms with
+  `'size' changed`; v0.7.0 retries through the dead window and commits on attempt 5 at +9811ms
+  with `'anc' changed` and the panel actually collapsed.
+- **The first `grow` knob was wrong and the wrongness is instructive:** it added a class to
+  `#panel`, which moved the button's box *and* changed an ancestor's class list — and an
+  ancestor gaining a class is exactly what a working panel-collapse looks like, so no rule
+  could ever separate the two. It made the fix look like it had failed. A fixture for layout
+  noise has to be layout and **nothing else** — it now writes an inline style on the button.
+- That leaves a known blind spot with no detection built for it: **a late class landing on a
+  container the taught element sits in is genuinely indistinguishable from a real effect.** If
+  a site turns out to do that, the lever is a control sample (does a nearby element that was
+  NOT clicked show the same change?) — but note a sibling shares the parent a real toggle
+  marks, so a naive control sample kills the true signal too. Do not build it speculatively.
 
 ## The trace: the broken case is the one with no observer in it
 
@@ -242,8 +282,20 @@ only inside an embedded frame), `fixture-late.html` (both controls in the served
 inert until 2000ms, plus a panel toggle that stays visible and only flips a class on its
 **grandparent**), `fixture-icon.html` (gate arrives at 12s, past the old watch window, and its
 close control is a `<div>` with a listener and no role, whose only clickable-looking hint is an
-inherited `cursor: pointer` — the exact shape that beat v0.3.0). Both expose
-`window.__verdict()` returning the pass/fail state.
+inherited `cursor: pointer` — the exact shape that beat v0.3.0). Most expose
+`window.__verdict()` returning the pass/fail state (`fixture-shadow.html` does not; read the
+trace instead).
+
+`fixture-late.html` takes three knobs, and they reproduce three different false positives:
+`?wire=<ms>` (how late the handlers bind — beat v0.4.0), `?churn=1` (a stream of class changes
+on `<html>` plus ancestor boxes settling — beat v0.5.0), `?grow=<ms>` (the taught control's own
+box changes size once, early, for a reason unrelated to the click — beat v0.6.0). They compose.
+
+**Driving a fixture does not require the teach flow.** Writing `GM:gs_rules` straight into
+`localStorage` is quicker and makes the test say what it is testing — a step is just
+`{path:[{s,l}], text, tag, label}`, `text` is the lowercased visible text (`''` skips the text
+filter), and one `path` entry per shadow root crossed. Then `location.reload()` and read
+`GM:gs_trace`.
 
 **All fixtures share one host (`localhost`) and rules are keyed by host, so there is exactly
 one rule slot for all of them.** Teaching a second fixture silently overwrites the first, and

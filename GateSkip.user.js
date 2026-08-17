@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        GateSkip
 // @namespace   https://github.com/VitaKaninen
-// @version     0.6.0
+// @version     0.7.0
 // @author      VitaKaninen
 // @description Teach it, once, which clicks dismiss a site's age gate, cookie wall or unwanted panel — then it does that for you on every later visit. Nothing is guessed and nothing fires until you have taught it.
 // @match       *://*/*
@@ -61,7 +61,7 @@
     const TRACE_MAX = 600;            // trace lines kept; a few page loads' worth
     // Bump with @version. A trace file that does not say which build produced it is worth
     // much less when it arrives days later.
-    const VERSION = '0.6.0';
+    const VERSION = '0.7.0';
     const DEBUG_DELAY = 5000;         // debug mode: how long to show the target first
 
     // Rule shape:
@@ -277,9 +277,7 @@
     // entirely up to the site: Wikipedia's panel "hide" button flips a class on the
     // button's immediate parent, while tests/fixture-late.html flips one on the
     // grandparent — and looking one level up caught the first and missed the second,
-    // which then ate all four attempts and left the panel toggled back open. Sizes come
-    // along because a section collapsing is often the only visible consequence, and it
-    // changes an ancestor's height without changing anybody's class.
+    // which then ate all four attempts and left the panel toggled back open.
     // Ancestor CLASSES only, and never <body> or <html>.
     //
     // Both exclusions are load-bearing, and getting them wrong is worse than having no
@@ -302,11 +300,27 @@
         return out.join('\n');
     }
 
+    // "Did the element's own box change size?" was the LAST of the three over-generous
+    // signals, and the one that survived v0.6.0 (2026-08-17). A control's box moves for
+    // reasons that have nothing to do with being clicked — a web font swapping in, a
+    // stylesheet finishing, an icon decoding — and all of those happen in the first few
+    // hundred milliseconds, which is exactly when the first click is fired and judged.
+    // So the verdict came back "'size' changed", the dead click was recorded as a
+    // dismissal, and the step was written off while the control sat there working.
+    //
+    // This is what made the bug look like a state bug rather than a timing one: on a
+    // RELOAD the font is already cached, the box never moves, the retries run, and it
+    // works. First visit on a fresh tab is the only load that has the noise in it.
+    //
+    // What survives is the part that was actually meant: a control COLLAPSING is a
+    // consequence. Growing by eight pixels is not. Reproduce with
+    // tests/fixture-late.html?wire=8000&grow=1 — v0.6.0 logs "dismissed the gate
+    // (1 click)" at +606ms with the panel still open.
     function clickState(el) {
-        let size = '';
+        let collapsed = false;
         try {
             const r = el.getBoundingClientRect();
-            size = Math.round(r.width) + 'x' + Math.round(r.height);
+            collapsed = (r.width < 1 || r.height < 1);
         } catch (_) {}
         return {
             gone: !el || !el.isConnected,
@@ -317,9 +331,8 @@
             pressed: (el && el.getAttribute('aria-pressed')) || '',
             selected: (el && el.getAttribute('aria-selected')) || '',
             ahidden: (el && el.getAttribute('aria-hidden')) || '',
-            // The clicked element's OWN box is a fair signal — it collapsing or being
-            // hidden is the consequence. Its ancestors' boxes are not.
-            size: size,
+            // Collapsing, not resizing — see above.
+            collapsed: collapsed,
             cls: (el && el.getAttribute('class')) || '',
             anc: el ? ancestry(el) : '',
             url: location.href
