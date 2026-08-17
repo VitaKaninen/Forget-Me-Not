@@ -1,0 +1,124 @@
+<!doctype html>
+<html class="theme-light">
+<head>
+<meta charset="utf-8">
+<title>Forget Me Not fixture — preference held in localStorage (rung 2)</title>
+<style>
+  /* Colours are Wikipedia's measured ones (rgb(248,249,250) / rgb(32,33,34)), so a
+     computed-style reading here is directly comparable to the numbers in docs/PREFS.md. */
+  html.theme-light body { background: #f8f9fa; color: #202122; }
+  html.theme-dark  body { background: #202122; color: #f8f9fa; }
+  html.theme-dark  .card { background: #2e3236; border-color: #54595d; }
+
+  body { font: 15px/1.5 system-ui, sans-serif; margin: 40px; }
+  .card { background: #fff; border: 1px solid #c8ccd1; border-radius: 8px;
+          padding: 14px 18px; margin: 14px 0; max-width: 46em; }
+  button { padding: 6px 14px; font-size: 15px; cursor: pointer; }
+  #banner { background: #fef6e7; border: 1px solid #edab00; color: #202122; }
+  code { font: 13px/1.4 ui-monospace, Consolas, monospace; }
+</style>
+
+<!-- Load order is the subject of this fixture, not incidental.
+     gm-shim         GM_* storage for the userscript
+     pref-probe      the instrument, first so it sees the served state
+     Forget-Me-Not   stands in for @run-at document-start; replay must happen HERE
+     site script     the page's own code, which must find the replayed value already there -->
+<script src="gm-shim.js"></script>
+<script src="pref-probe.js"></script>
+<script src="../Forget-Me-Not.user.js"></script>
+
+<script>
+  // ---- the site's own early script ------------------------------------------------
+  //
+  // What this fixture proves: rung 2. The preference lives in localStorage, and the root
+  // class is DERIVED from it on every load, authoritatively — whatever class the document
+  // was served with, or that anything else wrote before this line, is replaced.
+  //
+  // That is what makes the fixture discriminate. A replay that writes only the class
+  // (rung 1) is erased right here, before first paint, and the page comes up light. Only
+  // an `ls` entry present before this script runs produces dark. Sites that avoid a
+  // theme flash really are shaped like this: a tiny synchronous head script that reads
+  // storage and stamps the root element.
+  const KEY = 'fmnfix.theme';
+  const SKEY = 'fmnfix.bannerDismissed';
+
+  const storedAtParse = localStorage.getItem(KEY);
+  __probe.mark('read ' + KEY, storedAtParse === null ? '(absent)' : storedAtParse);
+  document.documentElement.className = 'theme-' + (storedAtParse === 'dark' ? 'dark' : 'light');
+  __probe.mark('applied class from storage', document.documentElement.className);
+</script>
+</head>
+
+<body>
+
+<h1>Theme preference, stored in localStorage</h1>
+
+<div class="card" id="banner" hidden>
+  <b>Session banner.</b> The kind of thing you dismiss once per tab and never think about
+  again — and then dismiss again in every fresh container, forever.
+  <button id="dismiss">Dismiss</button>
+</div>
+
+<div class="card">
+  <p>The preference is <code>localStorage["fmnfix.theme"]</code>. The class on
+     <code>&lt;html&gt;</code> is only ever a rendering of it, rewritten from storage on
+     every load — so replaying the class alone does nothing here.</p>
+  <button id="theme">Toggle theme</button>
+  <button id="forget">Forget this site</button>
+</div>
+
+<div class="card">
+  <b>Passes when</b>, on a fresh load with the <code>ls</code> entry replayed:
+  <code>sawAtParse === "dark"</code> — the site read our value as if it had always been
+  there. <code>bg</code> is <code>rgb(32, 33, 34)</code> with no light frame in front of it.
+  <br><b>Fails informatively when</b> only the DOM entry was replayed:
+  <code>sawAtParse === null</code> and the page is light, however dark it briefly was.
+  <br>The banner is the <code>ss</code> case, the weakest of the four kinds: replaying it
+  manufactures a resumed session that never existed, and it earns its place only on the
+  counterfactual — you would have clicked Dismiss in every fresh tab anyway.
+</div>
+
+<script>
+  // ---- the site's own late script --------------------------------------------------
+  // The banner is session-scoped, so it is read at DOMContentLoaded rather than in the
+  // head: nothing about it needs to beat first paint.
+  const banner = document.getElementById('banner');
+  window.__sawBannerAtLoad = sessionStorage.getItem(SKEY);
+  __probe.mark('read ' + SKEY, window.__sawBannerAtLoad === null ? '(absent)' : window.__sawBannerAtLoad);
+  banner.hidden = window.__sawBannerAtLoad === '1';
+
+  document.getElementById('dismiss').addEventListener('click', () => {
+    sessionStorage.setItem(SKEY, '1');
+    __probe.mark('wrote ' + SKEY, '1');
+    banner.hidden = true;
+  });
+
+  document.getElementById('theme').addEventListener('click', () => {
+    const next = document.documentElement.classList.contains('theme-dark') ? 'light' : 'dark';
+    localStorage.setItem(KEY, next);
+    __probe.mark('wrote ' + KEY, next);
+    document.documentElement.className = 'theme-' + next;
+  });
+
+  // Clears the SITE's keys only. Never localStorage.clear() — under tests/gm-shim.js that
+  // would also wipe GM storage, i.e. the rules and trace belonging to the thing under
+  // test, and the page would look like it had reset itself correctly while quietly
+  // disarming the script.
+  document.getElementById('forget').addEventListener('click', () => {
+    for (const s of [localStorage, sessionStorage]) {
+      const doomed = [];
+      for (let i = 0; i < s.length; i++) if (s.key(i).startsWith('fmnfix.')) doomed.push(s.key(i));
+      for (const k of doomed) s.removeItem(k);
+    }
+    location.reload();
+  });
+
+  window.__verdict = () => __probe.verdict({
+    sawAtParse: storedAtParse,
+    storedTheme: localStorage.getItem(KEY),
+    sawBannerAtLoad: window.__sawBannerAtLoad,
+    bannerVisible: !banner.hidden
+  });
+</script>
+</body>
+</html>

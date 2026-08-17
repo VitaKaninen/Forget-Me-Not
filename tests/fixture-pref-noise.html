@@ -1,0 +1,159 @@
+<!doctype html>
+<html class="theme-light">
+<head>
+<meta charset="utf-8">
+<title>Forget Me Not fixture — start-up noise vs one real preference (the baseline)</title>
+<style>
+  html.theme-light body { background: #f8f9fa; color: #202122; }
+  html.theme-dark  body { background: #202122; color: #f8f9fa; }
+  html.theme-dark  .card { background: #2e3236; border-color: #54595d; }
+
+  body { font: 15px/1.5 system-ui, sans-serif; margin: 40px; }
+  .card { background: #fff; border: 1px solid #c8ccd1; border-radius: 8px;
+          padding: 14px 18px; margin: 14px 0; max-width: 52em; }
+  button { padding: 6px 14px; font-size: 15px; cursor: pointer; }
+  code { font: 13px/1.4 ui-monospace, Consolas, monospace; }
+  table { border-collapse: collapse; margin-top: 8px; font-size: 14px; }
+  td, th { border: 1px solid #c8ccd1; padding: 3px 8px; text-align: left; }
+</style>
+
+<script src="gm-shim.js"></script>
+<script src="pref-probe.js"></script>
+<script src="../Forget-Me-Not.user.js"></script>
+
+<script>
+  // ---- the site's own start-up ------------------------------------------------------
+  //
+  // This page spends its first second doing what a real site does: stamping classes onto
+  // the root element as its modules come up, and writing its own session and analytics
+  // keys. None of it is a preference. All of it would be in a document-start-baselined
+  // diff, burying the one line that matters — which is the same shape of mistake as the
+  // v0.6.0 success test reading MediaWiki's start-up class churn as proof a click worked.
+  //
+  // So the baseline is a ROLLING snapshot that freezes at the first user interaction.
+  // Everything below happens before the user touches anything, so it is inside the
+  // baseline and cannot appear in the capture. That is the whole assertion.
+  //
+  // ?startup=<ms>  how long start-up churn lasts (default 1200). Interacting BEFORE it
+  //                finishes is the documented residual: the baseline freezes early, so
+  //                whatever the site does afterwards lands in the diff. Set it high
+  //                (?startup=20000) and click immediately to reproduce that on purpose.
+  const P = new URLSearchParams(location.search);
+  const STARTUP = Number(P.get('startup') || 1200);
+  const KEY = 'fmnfix.theme';
+
+  // The preference itself, read anti-flash style like any real themed site.
+  const storedAtParse = localStorage.getItem(KEY);
+  __probe.mark('read ' + KEY, storedAtParse === null ? '(absent)' : storedAtParse);
+  document.documentElement.className = 'theme-' + (storedAtParse === 'dark' ? 'dark' : 'light');
+
+  const uuid = () => 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = Math.random() * 16 | 0;
+    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+  });
+  const token = (n) => Array.from({ length: n }, () =>
+    'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'[Math.random() * 62 | 0]).join('');
+
+  // Scheduled across the start-up window rather than fired in one go, because a rolling
+  // snapshot that only ever re-ran once would pass a test where everything arrived at t=0.
+  const step = Math.max(1, Math.round(STARTUP / 5));
+  const at = (n, fn) => setTimeout(fn, n * step);
+
+  at(0, () => { document.documentElement.classList.add('client-js'); __probe.mark('add .client-js'); });
+  at(1, () => {
+    localStorage.setItem('fmnfix.sessionId', uuid());
+    localStorage.setItem('fmnfix.locale', 'en');
+    __probe.mark('wrote session + locale');
+  });
+  at(2, () => {
+    document.documentElement.setAttribute('data-mw-ready', '1');
+    sessionStorage.setItem('fmnfix.pageviews', '1');
+    sessionStorage.setItem('fmnfix.tabToken', token(40));
+    __probe.mark('wrote tab keys');
+  });
+  at(3, () => {
+    localStorage.setItem('fmnfix.consent', btoa(JSON.stringify({ v: 1, id: uuid(), ts: Date.now() })));
+    localStorage.setItem('fmnfix.analytics.lastSeen', String(Date.now()));
+    __probe.mark('wrote consent + analytics');
+  });
+  at(4, () => {
+    document.documentElement.classList.add('ready', 'sticky-header-visible');
+    if (document.body) document.body.classList.add('skin-vector');
+    __probe.mark('add .ready .sticky-header-visible + body.skin-vector');
+  });
+</script>
+</head>
+
+<body>
+
+<h1>One real preference, buried in a site's own start-up</h1>
+
+<div class="card">
+  <p>Wait for start-up to finish (<code id="when"></code> ms), then click. The click is
+     the freeze point — everything above is baseline, everything below is diff.</p>
+  <button id="theme">Toggle theme</button>
+  <button id="forget">Forget this site</button>
+</div>
+
+<div class="card">
+  <b>A capture taken after one click on Toggle theme must contain exactly these four
+  entries, and no others:</b>
+  <table>
+    <tr><th>entry</th><th>arrives</th><th>because</th></tr>
+    <tr><td><code>class :root +theme-dark</code></td><td>ticked</td><td>short, enumerable, and the user caused it</td></tr>
+    <tr><td><code>ls fmnfix.theme = dark</code></td><td>ticked</td><td>same</td></tr>
+    <tr><td><code>ls fmnfix.analytics.lastSeen</code></td><td><b>unticked</b></td><td>13-digit number — a timestamp</td></tr>
+    <tr><td><code>ls fmnfix.clickId</code></td><td><b>unticked</b></td><td>a UUID, and the key name says <code>id</code></td></tr>
+  </table>
+  <p>The last two are the site writing its own state <i>during the same interaction</i>
+     the user meant as a preference. They cannot be excluded by any baseline, which is
+     precisely why the review step exists and why the question it asks is
+     <b>“which of these did you mean to set?”</b> rather than “which look risky?”.</p>
+</div>
+
+<div class="card">
+  <b>And must NOT contain any of:</b>
+  <code>client-js</code>, <code>ready</code>, <code>sticky-header-visible</code>,
+  <code>data-mw-ready</code>, <code>body.skin-vector</code>,
+  <code>fmnfix.sessionId</code>, <code>fmnfix.locale</code>, <code>fmnfix.consent</code>,
+  <code>fmnfix.pageviews</code>, <code>fmnfix.tabToken</code> — all site-caused, all
+  written before the user touched anything, all inside the baseline.
+  <br>A diff that shows them means the baseline froze too early (or was taken at
+  document-start, the design this one replaced).
+</div>
+
+<script>
+  document.getElementById('when').textContent = STARTUP;
+
+  document.getElementById('theme').addEventListener('click', () => {
+    const next = document.documentElement.classList.contains('theme-dark') ? 'light' : 'dark';
+    localStorage.setItem(KEY, next);
+    document.documentElement.className =
+      document.documentElement.className.replace(/theme-\w+/, 'theme-' + next);
+
+    // The site's own bookkeeping, on the same click. Realistic and unavoidable: an
+    // interaction handler that touches analytics is the common case, not a contrived one.
+    localStorage.setItem('fmnfix.analytics.lastSeen', String(Date.now()));
+    localStorage.setItem('fmnfix.clickId', uuid());
+    __probe.mark('user set theme + site bookkeeping', next);
+  });
+
+  // Site keys only — never localStorage.clear(), which under tests/gm-shim.js would also
+  // wipe GM storage and silently disarm the script under test.
+  document.getElementById('forget').addEventListener('click', () => {
+    for (const s of [localStorage, sessionStorage]) {
+      const doomed = [];
+      for (let i = 0; i < s.length; i++) if (s.key(i).startsWith('fmnfix.')) doomed.push(s.key(i));
+      for (const k of doomed) s.removeItem(k);
+    }
+    location.reload();
+  });
+
+  window.__verdict = () => __probe.verdict({
+    startupMs: STARTUP,
+    sawAtParse: storedAtParse,
+    storedTheme: localStorage.getItem(KEY)
+  });
+</script>
+</body>
+</html>

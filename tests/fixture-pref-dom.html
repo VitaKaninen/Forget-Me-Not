@@ -1,0 +1,95 @@
+<!doctype html>
+<html data-theme="light">
+<head>
+<meta charset="utf-8">
+<title>Forget Me Not fixture — preference held only in the DOM (rung 1)</title>
+<style>
+  html[data-theme="light"] body { background: #f8f9fa; color: #202122; }
+  html[data-theme="dark"]  body { background: #202122; color: #f8f9fa; }
+  html[data-theme="dark"]  .card { background: #2e3236; border-color: #54595d; }
+
+  body { font: 15px/1.5 system-ui, sans-serif; margin: 0; display: flex; }
+  #sidebar { width: 200px; flex: none; padding: 20px; border-right: 1px solid #c8ccd1; }
+  body.sidebar-hidden #sidebar { display: none; }
+  main { padding: 20px 40px; }
+  .card { background: #fff; border: 1px solid #c8ccd1; border-radius: 8px;
+          padding: 14px 18px; margin: 14px 0; max-width: 46em; }
+  button { padding: 6px 14px; font-size: 15px; cursor: pointer; }
+  code { font: 13px/1.4 ui-monospace, Consolas, monospace; }
+</style>
+
+<script src="gm-shim.js"></script>
+<script src="pref-probe.js"></script>
+<script src="../Forget-Me-Not.user.js"></script>
+
+<script>
+  // ---- the site's own early script -------------------------------------------------
+  //
+  // There is deliberately none. This page never reads storage and never writes it: the
+  // CSS is keyed straight off `html[data-theme]` and `body.sidebar-hidden`, and those two
+  // are the entire preference. Nothing persists them, so a reload is always light with
+  // the sidebar showing — which is exactly Wikipedia's anonymous behaviour once the
+  // browser is blocking its cookie, and exactly the case rung 1 exists for.
+  //
+  // What this fixture proves, beyond "rung 1 works": that we NOTICE rung 1 is enough. A
+  // capture here must produce two DOM entries and ZERO storage entries. Any `ls` or `ss`
+  // entry in the diff is a bug in capture, not a preference — there is nothing here to
+  // find.
+  //
+  // It also carries the two DOM shapes the ls fixture does not: an ATTRIBUTE on :root
+  // (`{kind:'attr', sel:':root', name:'data-theme', value:'dark'}`), and a CLASS on BODY
+  // (`{kind:'class', sel:'body', add:['sidebar-hidden']}`), which is the entry that
+  // cannot be written at document-start because <body> does not exist yet and so has to
+  // be deferred to DOMContentLoaded.
+  __probe.mark('reads no storage, by design', '');
+</script>
+</head>
+
+<body>
+
+<nav id="sidebar">
+  <b>Sidebar</b>
+  <p>Wide, in the way, and closed by hand on every single visit.</p>
+</nav>
+
+<main>
+<h1>Theme and layout, held only in the DOM</h1>
+
+<div class="card">
+  <p>Theme is <code>&lt;html data-theme&gt;</code>. Layout is
+     <code>&lt;body class="sidebar-hidden"&gt;</code>. Neither is written anywhere, and
+     neither survives a reload on its own.</p>
+  <button id="theme">Toggle theme</button>
+  <button id="sidebar-toggle">Toggle sidebar</button>
+</div>
+
+<div class="card">
+  <b>Passes when</b>, on a fresh load with both DOM entries replayed:
+  <code>rootAttrs["data-theme"] === "dark"</code> from the very first timeline record
+  after <code>served</code>, <code>bodyClass</code> contains <code>sidebar-hidden</code>,
+  and <code>bg</code> is <code>rgb(32, 33, 34)</code>.
+  <br><b>And equally:</b> <code>ls</code> and <code>ss</code> are both <code>{}</code>,
+  before and after. A capture on this page that offers a storage entry has invented it.
+</div>
+</main>
+
+<script>
+  document.getElementById('theme').addEventListener('click', () => {
+    const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+    __probe.mark('set data-theme', next);
+    document.documentElement.dataset.theme = next;
+  });
+
+  document.getElementById('sidebar-toggle').addEventListener('click', () => {
+    __probe.mark('toggle body.sidebar-hidden', !document.body.classList.contains('sidebar-hidden'));
+    document.body.classList.toggle('sidebar-hidden');
+  });
+
+  window.__verdict = () => __probe.verdict({
+    theme: document.documentElement.dataset.theme,
+    sidebarHidden: document.body.classList.contains('sidebar-hidden'),
+    sidebarVisible: getComputedStyle(document.getElementById('sidebar')).display !== 'none'
+  });
+</script>
+</body>
+</html>

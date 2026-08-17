@@ -1,0 +1,100 @@
+<!doctype html>
+<html class="theme-light">
+<head>
+<meta charset="utf-8">
+<title>Forget Me Not fixture — a site that normalises the root class back (re-assertion)</title>
+<style>
+  html.theme-light body { background: #f8f9fa; color: #202122; }
+  html.theme-dark  body { background: #202122; color: #f8f9fa; }
+  html.theme-dark  .card { background: #2e3236; border-color: #54595d; }
+
+  body { font: 15px/1.5 system-ui, sans-serif; margin: 40px; }
+  .card { background: #fff; border: 1px solid #c8ccd1; border-radius: 8px;
+          padding: 14px 18px; margin: 14px 0; max-width: 46em; }
+  button { padding: 6px 14px; font-size: 15px; cursor: pointer; }
+  code { font: 13px/1.4 ui-monospace, Consolas, monospace; }
+</style>
+
+<script src="gm-shim.js"></script>
+<script src="pref-probe.js"></script>
+<script src="../Forget-Me-Not.user.js"></script>
+
+<script>
+  // ---- the site's own start-up ------------------------------------------------------
+  //
+  // This page fights us. At each moment in ?reset it rewrites the whole root class list
+  // from its own idea of the truth, wiping anything that was put there — not out of
+  // malice, but because plenty of real start-up code assigns `className` outright rather
+  // than adding to it, and a preference written at document-start is simply in the way.
+  //
+  // What this fixture proves: re-assertion at DOMContentLoaded / load / load+1000ms puts
+  // the preference back, and every re-application says so in the trace. That trace line
+  // is the health signal — a site that needs re-asserting is a site that is fighting us,
+  // and one that suddenly starts needing it has changed under the rule.
+  //
+  // ?reset=<ms>[,<ms>…]  when the site normalises. Default 1000 — inside the ladder, so
+  //                      the default run must recover.
+  //   ?reset=6000        lands after the last re-assertion point. The preference is then
+  //                      genuinely lost, and the requirement is that this is VISIBLE, not
+  //                      that it is prevented. A false claim of success here would be the
+  //                      v0.6.0 mistake in a new subsystem.
+  //   ?reset=200,1500,2500,4000   brackets every point in the schedule.
+  //
+  // Nothing on this page reads or writes storage, so the only entry a capture can offer
+  // is the root class — which is the one under attack.
+  const RESETS = (new URLSearchParams(location.search).get('reset') || '1000')
+    .split(',').map(s => Number(s.trim())).filter(n => n >= 0);
+  window.__resets = RESETS;
+
+  for (const ms of RESETS) {
+    setTimeout(() => {
+      __probe.mark('normalise :root className', 'theme-light');
+      document.documentElement.className = 'theme-light';
+    }, ms);
+  }
+</script>
+</head>
+
+<body>
+
+<h1>A site that keeps putting the root class back</h1>
+
+<div class="card">
+  <p>Normalisation runs at <code id="when"></code> ms. The user control below is a plain
+     toggle and persists nothing.</p>
+  <button id="theme">Toggle theme</button>
+</div>
+
+<div class="card">
+  <b>Passes when</b> (default <code>?reset=1000</code>): the timeline shows our write, the
+  site's <code>normalise</code> mark wiping it, and our re-assertion putting it back —
+  and <code>trace</code> names the entry at each re-application. End state
+  <code>rootClass === "theme-dark"</code>.
+  <br><b>Also passes when</b> <code>?reset=6000</code> ends light: the schedule has run
+  out and the site won. What must NOT happen is a trace or log line claiming the
+  preference was applied when the page is sitting there in light mode.
+  <br><b>And the third case, which has no reset in it at all:</b> click
+  <b>Toggle theme</b> back to light by hand after replay. Re-assertion must stop at that
+  first interaction and leave it light. Stamping a deliberate change back is the same
+  harm as re-clicking a toggle that stayed on screen — <code>firstInteraction</code> in
+  the verdict is the moment it had to stop.
+</div>
+
+<script>
+  document.getElementById('when').textContent = window.__resets.join(', ') || '(never)';
+
+  document.getElementById('theme').addEventListener('click', () => {
+    const next = document.documentElement.classList.contains('theme-dark') ? 'light' : 'dark';
+    __probe.mark('user toggled theme', next);
+    document.documentElement.className = 'theme-' + next;
+  });
+
+  window.__verdict = () => __probe.verdict({
+    resets: window.__resets,
+    // How many times the root class changed after the last scheduled normalisation is
+    // the crude form of "did anything re-assert"; the timeline is the readable form.
+    rootWrites: __probe.timeline.filter(e => e.what === 'html[class]').length
+  });
+</script>
+</body>
+</html>

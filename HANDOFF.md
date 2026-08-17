@@ -24,6 +24,9 @@ re-litigation, unless it says otherwise.
   reinvent them.
 - **The design for the new subsystem is written**: `docs/PREFS.md`. It is complete enough to
   build from.
+- **v0.11.0 is the current script.** M2 added four preference fixtures and `tests/pref-probe.js`
+  and changed no script code, so the version is unchanged and no regression is possible from it.
+  Next up is **M3**.
 
 ## Step 0 — the rename. ✅ DONE 2026-08-17.
 
@@ -127,17 +130,34 @@ Not renamed, on purpose: the DOM ids `gs-popup` / `gs-settings` / `gs-hud` and `
 `tests/gm-shim.js`. They are internal, nothing persists them, and churning them adds diff noise
 to exactly the milestones where a regression has to stay attributable.
 
-**M2 — Write the four fixtures before the feature exists.** `fixture-pref-ls`,
-`-dom`, `-hostile`, `-noise`, specified in `docs/PREFS.md`. This ordering is deliberate: four
-versions of this project were burned on never having stated precisely what "working" means, and
-a fixture is the cheapest way to state it. They are plain HTML pages describing *site*
-behaviour, so none of them depends on the storage shape or on any pref code existing.
+**M2 — Write the four fixtures before the feature exists. ✅ DONE 2026-08-17.**
+`fixture-pref-ls.html`, `-dom`, `-hostile`, `-noise`, plus the shared instrument
+`tests/pref-probe.js`. No userscript change, so no version bump. Each page states its own pass
+criteria in prose, and all four were driven in a real browser against the behaviour they claim —
+see the "preference fixtures" subsection of `CLAUDE.md` for the measured numbers and the two
+traps that are specific to this set.
 
-**Confirmed 2026-08-17.** `docs/PREFS.md`'s own "Build order" used to list the fixtures at step
-4, after capture and replay — a direct contradiction of this milestone, in the same package.
-Fixtures-first wins; PREFS has been corrected.
+The ordering was deliberate: four versions of this project were burned on never having stated
+precisely what "working" means, and a fixture is the cheapest way to state it. (`docs/PREFS.md`'s
+own "Build order" used to list them at step 4, after capture and replay — a direct contradiction
+of this milestone, in the same package. Fixtures-first won; PREFS is corrected.)
 
-**M3 — Rolling baseline + "Remember this site" capture + review UI.**
+Two things worth carrying into M3/M4:
+
+- **A fixture that only *demonstrates* a rung is not worth writing.** `fixture-pref-ls.html`
+  overwrites the root class from storage on every load specifically so that a class-only replay
+  visibly fails there, and `sawAtParse` reports what the site read *before* anything could
+  re-assert. A fixture where both rungs pass would have told us nothing about which one worked —
+  which is the open question PREFS parks under "rung 1 vs rung 2 sufficiency".
+- **`gm-shim.js` backs GM storage with page `localStorage`, which is exactly what a pref capture
+  snapshots.** The probe filters `GM:*` from its own views; capture code will not. Do not teach a
+  click rule on a pref fixture — an armed runner writes trace lines for the life of the page, and
+  those land after the baseline freezes. With no rule stored, GM writes stop at document-start
+  and the diff is clean. Verified rather than assumed.
+
+**M3 — Rolling baseline + "Remember this site" capture + review UI.** The fixtures now say what
+it has to produce: on `fixture-pref-noise.html`, exactly four entries after one click, two of
+them pre-ticked and two of them unticked with a reason.
 
 **M4 — Replay at document-start + re-assertion + trace lines.**
 

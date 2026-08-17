@@ -198,17 +198,29 @@ UI, the host-keyed storage, and the trace, and nothing else.
 
 ## Testing
 
-Fixtures to write, each isolating one mechanism:
+**Written and verified 2026-08-17, before any pref code.** Four fixtures, one mechanism each,
+plus the shared instrument `tests/pref-probe.js`. Full description in `../CLAUDE.md`; what each
+one asserts is also written on the page itself.
 
-- `fixture-pref-ls.html` — served with `theme-light` on `<html>`; its own script reads
-  localStorage on load and applies `theme-dark` if set. Proves rung 2.
-- `fixture-pref-dom.html` — same look, but nothing reads storage; the class alone drives the
-  CSS. Proves rung 1 is sufficient on its own, and that we notice.
-- `fixture-pref-hostile.html` — actively resets the root class at 1000ms. Proves
-  re-assertion, and that the trace says it happened.
-- `fixture-pref-noise.html` — dumps start-up classes and session keys during load, then lets
-  the test flip one real preference. Proves the settled baseline keeps the noise out of the
-  captured diff. This is the fixture that would have caught v0.6.0's mistake in its new form.
+- `fixture-pref-ls.html` — served with `theme-light` on `<html>`; its head script derives the
+  class from `localStorage['fmnfix.theme']` **authoritatively**, overwriting whatever was there.
+  Proves rung 2, and discriminates: a class-only replay is erased before first paint.
+  `sawAtParse` is `"dark"` only if the value was in storage before any site script ran. Also
+  carries the `ss` case, as a session banner.
+- `fixture-pref-dom.html` — nothing reads or writes storage; `html[data-theme]` and
+  `body.sidebar-hidden` are the entire preference. Proves rung 1 is sufficient on its own, and
+  that we notice — a capture here must yield two DOM entries and `ls`/`ss` of `{}`.
+- `fixture-pref-hostile.html?reset=<ms>[,<ms>…]` — rewrites the whole root class list at each
+  listed moment (default `1000`). Proves re-assertion and that the trace names the entry.
+  `?reset=6000` lands after the last re-assertion point: the preference is then genuinely lost,
+  and the requirement is that the loss is *visible*, never a claim of success over a page
+  sitting in light mode.
+- `fixture-pref-noise.html?startup=<ms>` — writes three root classes, a root attribute, a body
+  class, four `ls` and two `ss` keys during start-up, none of which may reach a capture. One
+  click on Toggle theme then yields exactly four entries, two of them site-caused and required
+  to arrive **unticked** (`analytics.lastSeen`, a 13-digit bump; `clickId`, a UUID) because the
+  site writes them in the same handler. Proves both the settled baseline and the classifier.
+  Interacting before start-up finishes reproduces the documented residual.
 
 Then the real target: Wikipedia, anonymous, in a fresh container — sidebar closed and dark
 theme, from first paint, with nothing sent.
@@ -221,8 +233,8 @@ HANDOFF gives: four versions of this project were burned on never having stated 
 "working" means. The four pages describe *site* behaviour, so none of them needs the storage
 shape or any pref code to exist first.
 
-1. Schema v2 + `fmn_*` keys, no behaviour change, no migration.
-2. **The four fixtures**, before any pref code is written.
+1. Schema v2 + `fmn_*` keys, no behaviour change, no migration. ✅ v0.10.0 / v0.11.0.
+2. **The four fixtures**, before any pref code is written. ✅ 2026-08-17.
 3. Rolling baseline + capture + review panel.
 4. Replay + re-assertion + trace lines.
 5. Wikipedia.
