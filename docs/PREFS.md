@@ -65,18 +65,25 @@ Wikipedia that is `client-js`, `mw-ready`, `vector-sticky-header-visible`, plus 
 session and analytics keys the page wrote. The signal (`…-clientpref-0`) would be buried in
 noise, exactly as the v0.6.0 success test was.
 
-So: **the baseline is taken once the page has settled, not when it started.**
+So: **the baseline is not a moment, it is a rolling snapshot that freezes when the user
+first touches the page.**
 
-    settled baseline := snapshot at `load` + 2000ms, OR at the first real user
-                        interaction, whichever happens first
+    rolling baseline := re-snapshot every ~500ms; FREEZE at the first real user
+                        interaction (pointerdown / keydown / click)
 
-Start-up noise has landed by then and is excluded by construction. What remains in the diff
-is overwhelmingly what the user themselves did this visit, which is what we want to keep.
+The frozen value is therefore "the state of the page at the last moment before you touched
+anything". Everything the site did during start-up is inside the baseline and cannot appear
+in the diff. Everything the user did is after it, and does.
 
-Taking it at first interaction too is what makes it safe for someone who changes a setting
-three seconds after load. Late-arriving site classes (a widget that adds one at 5s) will
-still slip into the diff; the review step is what catches those, and they should be rare
-enough not to matter.
+**An earlier draft had this as "`load`+2000ms, or first interaction, whichever comes first",
+and that is broken.** Scroll at 500ms and the baseline freezes before the site has finished
+starting up, so all the remaining start-up noise lands in the capture diff — the exact thing
+the baseline exists to exclude. Rolling-then-freeze is both simpler and correct, and it
+handles the open-a-tab-walk-away-come-back-and-click case for free: whatever the site did at
+t=30s is in the baseline, because the user had not touched anything yet.
+
+Residual: a site that changes something on its own *after* the user's first interaction will
+have that land in the diff. Unavoidable, and what the review step is for.
 
 ### Review
 
