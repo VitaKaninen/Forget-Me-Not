@@ -103,15 +103,52 @@ step counts as done only once the page demonstrably moved.
 - Exhausting the attempts is **reported, not swallowed** — `run.noop` downgrades the
   completion line to "ran all N clicks, but at least one of them changed nothing".
 
+## The watch window is measured from the wrong end (v0.4.0, 2026-08-17)
+
+`arm()` runs at document-start, so the ten-second window was spent *while the page was still
+loading*. A gate that arrives with a vendor script at ~12s was never seen on a normal visit —
+but opening Settings or toggling debug called `arm(true)`, which opened a fresh window with
+the gate already on screen, so it fired **instantly**. The reported symptom was "it only works
+when debug is on or I change a setting", which sounds like a state bug and is not one.
+
+`extendWatch()` renews the budget at DOMContentLoaded and at `load`; hunting still starts at
+document-start. Default raised 10s → 15s. **The tell for this class of bug: a fix that works
+when you look at it and not otherwise is about time, not state.** Same tell as v0.3.0's
+`DEBUG_DELAY`.
+
+**A vanish during the verify window used to be lost.** The restart test is "step 1 stopped
+resolving and then started again" — necessary because plenty of sites re-attach the *same*
+node, where identity says nothing. `run.vanished` was only ever set inside the `run.done`
+branch, but the verify/retry cycle put a 450ms gap between the click and `run.done`, and a gate
+that vanished and returned inside that gap was never recorded as having gone. `commitClick`
+now records it. Caught on `fixture-simple.html`, which detaches and re-attaches its gate at
+400ms — end state was the gate still up with the log claiming a dismissal.
+
+**The Browser pane throttles timers when hidden** (`document.visibilityState === 'hidden'`),
+which stretches every sub-second timing in these tests and makes the first click land in the
+un-wired window far more often than on a visible tab. Do not read a flaky sub-second fixture
+result as a script bug without checking `visibilityState` first.
+
 **The icon inside the button is not the button.** A step recorded as `path (no text)` is a
 click that landed on an `<svg>` child. Two fixes, because old rules already store the
 `<path>`: `clickableFrom` (teach time) falls back to the nearest ancestor with
 `cursor: pointer` when nothing matches `CLICKABLE` — which is what a `<div>`-with-a-listener
-close button looks like from outside — and `clickTarget` (click time) walks an `INERT_TAG`
-element up to the nearest real control. Attempts 1–2 use that control, attempt 3+ falls back
-to the exact node taught, because there is no way to tell from here which of the two the site
-listens on. Note `el.click()` is `HTMLElement`'s, so on an SVG node it **throws** — the
-`dispatchEvent` fallback in `realClick` is load-bearing, not belt-and-braces.
+close button looks like from outside — and `clickCandidates` (click time) builds the same list
+for an old rule that already stored the `<path>`. Note `el.click()` is `HTMLElement`'s, so on
+an SVG node it **throws** — the `dispatchEvent` fallback in `realClick` is load-bearing, not
+belt-and-braces.
+
+- **`cursor` is an INHERITED CSS property, so this fallback lands on the icon unless you stop
+  it.** The `<svg>` and the `<path>` inside a `cursor: pointer` wrapper both compute to
+  `pointer` themselves, so "walk up and take the first match" returns the very element it
+  exists to walk out of. Both passes skip `INERT_TAG`. This silently defeated the whole fix —
+  teaching still recorded `path (no text)` — and looked like the fallback not running at all.
+- **The retries work through the candidates instead of repeating one guess** (`fireClick`
+  cycles `v.cands` modulo, so a single candidate still means "click the same thing again",
+  which is what the not-yet-wired case needs). Order: declared control, then thing that merely
+  looks like a control, then the node taught, then its parent.
+- **Exhausting them now says "re-teaching this step will record a better target"**, because
+  for an old rule that is the actual cure.
 
 `realClick` also sends real `clientX/clientY` now. A bare `new MouseEvent('click')` reports
 0,0, and handlers that hit-test or position themselves off the pointer can reasonably ignore
@@ -138,7 +175,10 @@ served HTML), `fixture-shadow.html` (two-step gate behind an open shadow root, c
 button disabled until the box is ticked), `fixture-iframe.html` + `gate-inner.html` (gate
 only inside an embedded frame), `fixture-late.html` (both controls in the served HTML but
 inert until 2000ms, plus a panel toggle that stays visible and only flips a class on its
-**grandparent** — `window.__verdict()` returns the pass/fail state).
+**grandparent**), `fixture-icon.html` (gate arrives at 12s, past the old watch window, and its
+close control is a `<div>` with a listener and no role, whose only clickable-looking hint is an
+inherited `cursor: pointer` — the exact shape that beat v0.3.0). Both expose
+`window.__verdict()` returning the pass/fail state.
 
 **All fixtures share one host (`localhost`) and rules are keyed by host, so there is exactly
 one rule slot for all of them.** Teaching a second fixture silently overwrites the first, and

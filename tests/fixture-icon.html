@@ -1,0 +1,64 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>GateSkip fixture — late gate, and a close control with no handler of its own</title>
+<style>
+  body { font: 15px/1.5 system-ui, sans-serif; margin: 40px; background: #111; color: #ddd; }
+  #overlay { position: fixed; inset: 0; background: rgba(0,0,0,.8); display: flex;
+             align-items: center; justify-content: center; }
+  .box { background: #222; padding: 28px 32px; border-radius: 10px; text-align: center; }
+  .box button { margin: 6px; padding: 8px 18px; font-size: 15px; cursor: pointer; }
+
+  #sidebar { position: fixed; top: 0; right: 0; width: 260px; height: 100%;
+             background: #1a1a1a; border-left: 1px solid #333; padding: 14px; }
+  /* The close control: a plain <div> with a listener. No role, no tabindex, no onclick
+     attribute — so it matches nothing in CLICKABLE — and the only thing under the cursor
+     is the <path> inside the icon, which has no handler at all. `cursor: pointer` is the
+     only outward sign that this is a control. */
+  .x { position: absolute; top: 10px; right: 10px; width: 34px; height: 34px;
+       border-radius: 50%; background: #333; display: flex; align-items: center;
+       justify-content: center; cursor: pointer; }
+  .x svg { width: 18px; height: 18px; stroke: #ccc; stroke-width: 2; fill: none; }
+</style>
+
+<script src="gm-shim.js"></script>
+<script src="../GateSkip.user.js"></script>
+
+<h1 id="content">The real page content.</h1>
+<p>Dismissed correctly when the overlay is gone AND the sidebar is gone.</p>
+
+<script>
+  // Twelve seconds. Not arbitrary: the old watch window was ten seconds counted from
+  // document-start, so a gate arriving with a slow third-party script was never seen at
+  // all on a normal visit — while opening Settings later made it fire instantly, because
+  // that opened a fresh window with the gate already on screen. The window is now counted
+  // from `load`, so this must be caught.
+  const GATE_AT = 12000;
+
+  setTimeout(() => {
+    const ov = document.createElement('div');
+    ov.id = 'overlay';
+    ov.innerHTML = '<div class="box"><h2>Age check</h2>' +
+                   '<button id="agree">I AGREE</button></div>';
+    document.body.appendChild(ov);
+    ov.querySelector('#agree').addEventListener('click', () => {
+      ov.remove();
+      document.body.appendChild(sidebar);
+    });
+  }, GATE_AT);
+
+  // Built up front so the listener is wired before anything is detached.
+  const sidebar = document.createElement('div');
+  sidebar.id = 'sidebar';
+  sidebar.innerHTML = '<div class="x"><svg viewBox="0 0 24 24">' +
+                      '<path d="M5 5 L19 19 M19 5 L5 19"></path></svg></div>' +
+                      '<h3>REGIONS</h3><p>sidebar contents</p>';
+  // The handler lives on the div, and nowhere else. A click dispatched at the <path>
+  // bubbles here, but a click sent to the wrong ancestor does not reach it.
+  sidebar.querySelector('.x').addEventListener('click', () => sidebar.remove());
+
+  window.__verdict = () => ({
+    gateGone: !document.getElementById('overlay'),
+    sidebarGone: !document.getElementById('sidebar'),
+    log: JSON.parse(localStorage.getItem('GM:gs_log') || '[]').slice(0, 5).map(e => e.m)
+  });
+</script>

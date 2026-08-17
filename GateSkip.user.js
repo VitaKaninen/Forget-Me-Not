@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        GateSkip
 // @namespace   https://github.com/VitaKaninen
-// @version     0.3.0
+// @version     0.4.0
 // @author      VitaKaninen
 // @description Teach it, once, which clicks dismiss a site's age gate, cookie wall or unwanted panel — then it does that for you on every later visit. Nothing is guessed and nothing fires until you have taught it.
 // @match       *://*/*
@@ -35,7 +35,11 @@
     const DEBUG_KEY = 'gs_debug';     // GM: true to narrate + delay every click
     const TEACH_KEY = 'gs_teach';     // sessionStorage (top frame): teaching in progress
 
-    const WATCH_DEFAULT = 10000;      // how long after a load/navigation to keep looking
+    // How long to keep looking. Measured from the last point the page reached, not from
+    // document-start — see extendWatch(). A gate that arrives with a vendor script is
+    // routinely 10+ seconds after parsing begins, and counting from the earliest possible
+    // moment spent the whole budget before the page was even usable.
+    const WATCH_DEFAULT = 15000;
     const SETTLE_MS = 150;            // pause after a click before hunting the next step
     const VERIFY_MS = 450;            // grace period before deciding a click did nothing
     const CLICK_TRIES = 4;            // attempts at one step before writing it off
@@ -191,14 +195,57 @@
     // often works anyway — but a site that binds its handler to the button and reads
     // `event.currentTarget` never reacts, and an <svg> has no `.click()` at all.
     const INERT_TAG = /^(?:svg|path|g|use|circle|rect|line|polygon|polyline|ellipse|img|i)$/i;
-    function clickTarget(el) {
-        if (!el || !el.tagName || !INERT_TAG.test(el.tagName)) return el;
-        let cur = el.parentElement;
-        for (let i = 0; i < 4 && cur; i++) {
-            try { if (cur.matches && cur.matches(CLICKABLE)) return cur; } catch (_) {}
-            cur = cur.parentElement;
+
+    // Which element the site listens on is not knowable from here, so the retries are spent
+    // working through the possibilities rather than repeating one guess. In order: the
+    // nearest element that declares itself a control, the nearest one that merely LOOKS
+    // like a control, the node that was actually taught, and its parent.
+    //
+    // The second of those is the one that matters in practice. A close button built from a
+    // <div> with an addEventListener — no role, no tabindex, no onclick attribute — matches
+    // nothing in CLICKABLE, and the taught node is then the <path> inside its icon, which
+    // has no handler of its own. That case clicked four times and moved nothing.
+    //
+    // When the taught node is already a real control this list has one entry, so all the
+    // attempts land on it — which is the behaviour the timing case needs.
+    function clickCandidates(el) {
+        const out = [];
+        const add = (n) => { if (n && n.nodeType === 1 && out.indexOf(n) === -1) out.push(n); };
+        const inert = !!(el && el.tagName && INERT_TAG.test(el.tagName));
+
+        if (inert) {
+            let cur = el.parentElement;
+            for (let i = 0; i < 5 && cur; i++) {
+                let hit = false;
+                try { hit = !!(cur.matches && cur.matches(CLICKABLE)); } catch (_) {}
+                if (hit) { add(cur); break; }
+                cur = cur.parentElement;
+            }
+            // `cursor` INHERITS, so the <svg> and the <path> inside a cursor:pointer
+            // wrapper both report `pointer` themselves. Walking up and taking the first
+            // match therefore stops on the icon it was supposed to walk out of — which is
+            // exactly the element already known not to work. Only a non-inert node counts.
+            cur = el.parentElement;
+            for (let i = 0; i < 5 && cur && cur !== document.body; i++) {
+                if (!INERT_TAG.test(cur.tagName)) {
+                    let st;
+                    try { st = getComputedStyle(cur); } catch (_) { st = null; }
+                    if (st && st.cursor === 'pointer') { add(cur); break; }
+                }
+                cur = cur.parentElement;
+            }
         }
-        return el;
+        add(el);
+        if (inert) add(el.parentElement);
+        return out;
+    }
+
+    // For the debug HUD, so "which of the four did it actually hit" is answerable.
+    function descEl(el) {
+        if (!el || !el.tagName) return '?';
+        const id = el.getAttribute('id');
+        const cls = (el.getAttribute('class') || '').trim().split(/\s+/)[0];
+        return '<' + el.tagName.toLowerCase() + (id ? '#' + id : (cls ? '.' + cls : '')) + '>';
     }
 
     // What a click is SUPPOSED to move. A gate button is torn out of the document, a
@@ -412,10 +459,10 @@
     // moved at all, and a step is only counted as done once something did — see
     // clickState() for what counts. Three states, in order: fire, wait, check.
     function fireClick(v, now) {
-        // Attempts 1 and 2 go to the nearest real control; if the page has ignored both,
-        // attempt 3 goes to the exact node that was taught instead. One of the two is
-        // wrong on any given site and there is no way to tell which from here.
-        v.hit = (v.tries >= 3) ? v.el : v.target;
+        // Cycled, not clamped: with one candidate every attempt repeats it, which is what a
+        // control that is merely not wired up yet needs, and with several the extra attempts
+        // come back round to the first.
+        v.hit = v.cands[(v.tries - 1) % v.cands.length] || v.el;
         v.before = clickState(v.hit);
         v.phase = 'check';
         v.at = now + VERIFY_MS;
@@ -424,12 +471,23 @@
         run.deadline = Math.max(run.deadline, now + VERIFY_MS + 4000);
         realClick(v.hit);
         dbg('clicked step ' + (run.idx + 1) + ' of ' + run.rule.steps.length +
-            (v.tries > 1 ? ' (attempt ' + v.tries + ' of ' + CLICK_TRIES + ')' : '') +
-            (v.hit !== v.el ? ' — on the <' + v.hit.tagName.toLowerCase() + '> around the element taught' : ''));
+            (v.max > 1 ? ' (attempt ' + v.tries + ' of ' + v.max + ')' : '') +
+            (v.hit !== v.el ? ' — on ' + descEl(v.hit) + ' around the ' + descEl(v.el) + ' taught'
+                            : (v.cands.length > 1 ? ' — on the ' + descEl(v.el) + ' taught' : '')));
     }
 
     function beginClick(el, now) {
-        run.verify = { el, target: clickTarget(el), hit: null, before: null, tries: 1, phase: 'check', at: 0 };
+        const cands = clickCandidates(el);
+        run.verify = {
+            el, cands, hit: null, before: null, tries: 1, phase: 'check', at: 0,
+            // Every candidate gets at least one go, plus a repeat of the first.
+            max: Math.max(CLICK_TRIES, cands.length + 1)
+        };
+        if (cands.length > 1) {
+            dbg('step ' + (run.idx + 1) + ': the element taught is ' + descEl(el) +
+                ', which nothing listens on by itself — will try ' +
+                cands.map(descEl).join(', then '));
+        }
         fireClick(run.verify, now);
     }
 
@@ -442,6 +500,15 @@
         if (v.hit && v.hit !== v.el) run.clicked.push(v.hit);
         run.idx++;
         run.settleUntil = now + SETTLE_MS;
+
+        // The restart test further down asks whether step 1 stopped resolving and then
+        // started resolving again, because a page that detaches and re-attaches the SAME
+        // node cannot be caught by node identity. That vanish now happens during the
+        // verify window — before run.done is ever set — so unless it is recorded here it
+        // is simply lost, and the gate coming back reads as a gate that never left.
+        // Introduced by the verify/retry cycle; the old code clicked and completed in one
+        // step, so the done-branch always saw it.
+        if (!resolveStep(run.rule.steps[0])) run.vanished = true;
 
         if (run.idx >= run.rule.steps.length) {
             run.done = true;
@@ -516,7 +583,7 @@
                     commitClick(now);
                     return;
                 }
-                if (fresh !== v.el) { v.el = fresh; v.target = clickTarget(fresh); }
+                if (fresh !== v.el) { v.el = fresh; v.cands = clickCandidates(fresh); }
                 fireClick(v, now);
                 return;
             }
@@ -531,17 +598,18 @@
                 return;
             }
 
-            if (v.tries >= CLICK_TRIES) {
+            if (v.tries >= v.max) {
                 run.noop = true;
                 log('step ' + (run.idx + 1) + ' of ' + run.rule.steps.length +
-                    ' was clicked ' + CLICK_TRIES + ' times and the page never reacted' +
-                    ' — the control is probably not the one the site listens on, or was never wired up');
-                dbg('step ' + (run.idx + 1) + ': ' + CLICK_TRIES + ' clicks, nothing moved on the page at all' +
-                    ' — giving up on this step');
+                    ' was clicked ' + v.max + ' times (' + v.cands.map(descEl).join(', ') +
+                    ') and the page never reacted — re-teaching this step will record a better target');
+                dbg('step ' + (run.idx + 1) + ': ' + v.max + ' clicks across ' +
+                    v.cands.map(descEl).join(', ') + ' and nothing moved on the page at all' +
+                    ' — giving up on this step; re-teach it to record a better target');
                 if (run.mark) {
                     try {
                         run.mark.setColor('#f9e2af');
-                        run.mark.setLabel('GateSkip: clicked ' + CLICK_TRIES + '× — the page did not react');
+                        run.mark.setLabel('GateSkip: clicked ' + v.max + '× — the page did not react');
                     } catch (_) {}
                     run.mark = null;
                 }
@@ -682,6 +750,25 @@
             run.obs.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style', 'hidden', 'aria-hidden'] });
         } catch (_) {}
         tick();
+    }
+
+    // The watch window is "N seconds after the page got somewhere", not "N seconds after
+    // the browser started parsing". Hunting still begins at document-start — that is what
+    // catches a server-rendered gate before first paint — but the budget is renewed as the
+    // document reaches DOMContentLoaded and then load, because a gate injected by a script
+    // that is itself still downloading cannot appear until well after parsing began.
+    //
+    // Without this, a site whose gate arrived at ~12s was never touched on a normal visit,
+    // while opening Settings or toggling debug made it fire instantly — those call
+    // arm(true), which opened a fresh window with the gate already on screen. The rule was
+    // fine; it was being asked to watch during the wrong ten seconds.
+    function extendWatch(why) {
+        if (!run || run.done) return;
+        const ms = (run.rule.watchMs > 0) ? run.rule.watchMs : watchDefault();
+        const until = Date.now() + ms;
+        if (until <= run.deadline) return;
+        run.deadline = until;
+        dbg('page reached ' + why + ' — watching ' + Math.round(ms / 1000) + 's more from here');
     }
 
     // ---------------- SPA navigation ----------------
@@ -1009,9 +1096,14 @@
         // onclick attribute — and the fallback below would then record the <path> inside
         // its icon, whose selector is fragile and which is not what the site listens on.
         // `cursor: pointer` is what such a thing looks like from the outside.
+        //
+        // Inert tags are skipped because `cursor` is INHERITED: the <path> under a
+        // cursor:pointer wrapper reports `pointer` itself, so without this the pass
+        // returns the very icon it exists to walk out of.
         for (let i = 0; i < path.length && i < 8; i++) {
             const n = path[i];
             if (!n || n.nodeType !== 1 || n === document.body || n === document.documentElement) continue;
+            if (INERT_TAG.test(n.tagName)) continue;
             let st;
             try { st = getComputedStyle(n); } catch (_) { continue; }
             if (st && st.cursor === 'pointer') return n;
@@ -1683,6 +1775,7 @@
 
     const boot = () => {
         watchNavigation();
+        extendWatch('DOM ready');
         if (isTop) {
             // A teach session that was interrupted by the gate's own navigation picks up
             // where it left off — the steps live in sessionStorage precisely so that the
@@ -1704,6 +1797,15 @@
         }
         arm();
     };
+
+    // `load` is the one that matters for a gate pulled in by a third-party script: it does
+    // not fire until those have finished arriving, which is the earliest moment such a gate
+    // could exist.
+    if (document.readyState === 'complete') {
+        setTimeout(() => extendWatch('fully loaded'), 0);
+    } else {
+        window.addEventListener('load', () => extendWatch('fully loaded'), { once: true });
+    }
 
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', boot, { once: true });
