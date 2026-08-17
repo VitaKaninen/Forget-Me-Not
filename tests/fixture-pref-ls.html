@@ -71,8 +71,14 @@
   <b>Passes when</b>, on a fresh load with the <code>ls</code> entry replayed:
   <code>sawAtParse === "dark"</code> — the site read our value as if it had always been
   there. <code>bg</code> is <code>rgb(32, 33, 34)</code> with no light frame in front of it.
-  <br><b>Fails informatively when</b> only the DOM entry was replayed:
-  <code>sawAtParse === null</code> and the page is light, however dark it briefly was.
+  <br><b>Picks the wrong rung when</b> only the class entries were replayed. Measured
+  2026-08-17: the page still ends up dark, because re-assertion at DOM ready puts the class
+  back after this script wipes it — so the <i>end state</i> cannot tell the two rungs apart.
+  The tells are <code>sawAtParse === null</code> (the site never saw our value), a light
+  flash before DOM ready, and a trace line reading
+  <code>re-asserted at DOM ready … the site had overwritten them</code>. That is the health
+  signal doing its job: it works, but only by fighting, and it will stop working the moment
+  the site moves its overwrite later. Prefer the <code>ls</code> entry here.
   <br>The banner is the <code>ss</code> case, the weakest of the four kinds: replaying it
   manufactures a resumed session that never existed, and it earns its place only on the
   counterfactual — you would have clicked Dismiss in every fresh tab anyway.

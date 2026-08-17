@@ -197,17 +197,32 @@ At document-start, per frame, for the matching host, in this order:
 lives on the root element, and arbitrary selectors drag in the whole resolution-and-retry
 problem the click runner already owns. Widen it only when a real site demands it.
 
+**Storage entries are written only if the key is absent** (added v0.13.0). Replay restores what
+the container destroyed; a value still sitting there was not destroyed, so this browser kept it
+and the user may have changed it since. Overwriting would stamp an old preference over a newer
+one.
+
 ### Re-assertion, and how we find out it stopped working
 
 Some sites will normalise the root element during start-up and overwrite what we wrote. So
 DOM entries are re-applied at DOMContentLoaded, at `load`, and at `load`+1000ms — and
 **every re-application writes a trace line naming the entry**. That line is the health
 signal: a site that needs re-asserting is a site that is fighting us, and one that suddenly
-starts needing it has changed under the rule.
+starts needing it has changed under the rule. (A pass that changed nothing writes no line: it
+was not a re-application, and a heartbeat on every quiet pass would bury the ones that matter.)
 
 Re-assertion **stops at the first user interaction**. Otherwise a preference the user
 deliberately changes mid-visit gets stamped back, which is the same class of harm as
-re-clicking a toggle that stayed on screen.
+re-clicking a toggle that stayed on screen. **Trusted events only** — the click runner
+dispatches its own pointer events, and without that guard a host with both halves taught froze
+its baseline at ~7ms and lost re-assertion entirely.
+
+Immediately after the last re-application, one line states what actually held — **including how
+many held only because they were put back**, since "it holds" and "it holds because we kept
+fighting for it" are different results. Everything after that moment is covered by a read-only
+observer that reports the first loss and disconnects; it never re-applies. A fixed-time audit was
+tried first and was worse than nothing: on `fixture-pref-hostile.html?reset=6000` it reported
+success three seconds before the site took the preference back.
 
 ### Interaction with the click runner
 
@@ -256,7 +271,7 @@ shape or any pref code to exist first.
 1. Schema v2 + `fmn_*` keys, no behaviour change, no migration. ✅ v0.10.0 / v0.11.0.
 2. **The four fixtures**, before any pref code is written. ✅ 2026-08-17.
 3. Baseline + capture + review panel. ✅ v0.12.0.
-4. Replay + re-assertion + trace lines.
+4. Replay + re-assertion + trace lines. ✅ v0.13.0.
 5. Wikipedia.
 
 ## Open, deliberately deferred

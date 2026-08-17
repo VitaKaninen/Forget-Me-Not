@@ -24,8 +24,9 @@ re-litigation, unless it says otherwise.
   reinvent them.
 - **The design for the new subsystem is written**: `docs/PREFS.md`. It is complete enough to
   build from.
-- **v0.12.0 is the current script.** M2 added four preference fixtures and `tests/pref-probe.js`
-  with no script change; M3 added the capture half. Next up is **M4**, replay.
+- **v0.13.0 is the current script, and the preference half is feature-complete.** M2 added the
+  four fixtures, M3 the capture half, M4 replay. Next up is **M5** — Wikipedia in a fresh
+  container, the first run against a site with no fixture behind it.
 
 ## Step 0 — the rename. ✅ DONE 2026-08-17.
 
@@ -174,16 +175,39 @@ the ± sign, and an unticked id-like entry is stored without its value. The seco
 the fixture, not by reasoning: with the sign in the identity, flipping a preference and
 capturing again stored both "add it" and "remove it".
 
-**M4 — Replay at document-start + re-assertion + trace lines.** The fixtures already state what
-it has to do, and `fixture-pref-hostile.html` is the one to build against. Two things waiting
-for it, both noted rather than done, because doing them now would have put runner changes in a
-capture-only commit:
+**M4 — Replay at document-start + re-assertion + trace lines. ✅ DONE 2026-08-17, v0.13.0.**
+Both rungs work. The two items left over from M3 are done: `arm()` now says `no taught clicks for
+<host> — N preference(s) are replayed here instead`, and the prefs-only rule is handled
+throughout.
 
-- **`arm()` still logs `no rule for <host> — Forget Me Not is doing nothing on this page` when
-  the host has prefs but no taught clicks.** That is already slightly wrong and will be plainly
-  wrong once replay exists.
-- **A prefs-only rule is now a normal thing to have** (`clicks: []`). The Settings importer was
-  fixed to accept one; check anything else that assumes a rule implies a sequence.
+Write-up in `CLAUDE.md` under "Replay: rungs 1 and 2, re-assertion, and the loss watcher". The
+three things worth knowing before touching it:
+
+- **The click runner's own synthetic click was freezing the preference baseline** on a host with
+  both halves taught — +7ms, which is document-start in all but name, and re-assertion switched
+  off before the page finished loading. The interaction watcher now ignores untrusted events.
+  This is the "two halves must not interfere" seam failing quietly, and it could only ever show
+  up on a host that has both.
+- **A fixed-time audit was worse than nothing** and `fixture-pref-hostile.html?reset=6000` caught
+  it: it reported "all preferences still hold" three seconds before the site took them back. The
+  positive line is now scoped to `hold as re-assertion finishes`, and a read-only observer
+  reports the first loss afterwards.
+- **Re-assertion can mask a wrong-rung choice.** On `fixture-pref-ls.html` a class-only replay
+  ends up looking identical to the correct rung-2 choice, because re-assertion restores what the
+  site wiped. Never judge a rung by the end state — read `sawAtParse` and the re-assert count.
+
+Not verified live, and stated as such in `CLAUDE.md`: **re-assertion's own `touched` gate**, as
+distinct from the watcher's. It needs a trusted interaction inside the first second of a page
+load, which the test tooling cannot deliver. Inspected only.
+
+**M5 — Wikipedia, anonymous, in a fresh container.** All the machinery now exists; this is the
+first run against a site nobody wrote a fixture for. `docs/PREFS.md` has the measurement already
+taken: the six `clientpref` classes on `:root`, all low-entropy and enumerable, with rung 1 alone
+sufficient for the theme and the TOC pin, and localStorage untouched and empty throughout.
+Expect the capture to offer those classes pre-ticked. Watch for two things — whether MediaWiki's
+start-up rewrites `:root`'s class list (which would show up as re-assert lines, and would make
+the audit's re-assert count the thing to read), and whether the served class list differs
+between logged-out visits.
 
 **M5 — Wikipedia, anonymous, in a fresh container.** Sidebar closed and dark theme from first
 paint, with nothing transmitted.

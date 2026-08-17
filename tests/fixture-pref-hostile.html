@@ -72,7 +72,13 @@
   <code>rootClass === "theme-dark"</code>.
   <br><b>Also passes when</b> <code>?reset=6000</code> ends light: the schedule has run
   out and the site won. What must NOT happen is a trace or log line claiming the
-  preference was applied when the page is sitting there in light mode.
+  preference was applied when the page is sitting there in light mode — and this fixture
+  caught exactly that. A timed audit at load+3s reported <i>“all 2 page preferences still
+  hold”</i> over a page that went light three seconds later. The audit's positive line is
+  now scoped to what it can see (<code>hold as re-assertion finishes</code>) and a
+  read-only observer reports the loss at the moment it happens: measured
+  <code>LOST 2 of 2 … the site has put them back</code> at +6007ms, in the trace and in
+  Recent activity.
   <br><b>And the third case, which has no reset in it at all:</b> click
   <b>Toggle theme</b> back to light by hand after replay. Re-assertion must stop at that
   first interaction and leave it light. Stamping a deliberate change back is the same

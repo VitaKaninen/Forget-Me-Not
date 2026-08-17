@@ -253,6 +253,68 @@ across frames, which is how a frame's trace lines reach the top document, and an
 is per frame with last-flush-wins. Do not break a working instrument to tidy an artefact that
 appears in one flow and has a one-word workaround ("reload").
 
+## Replay: rungs 1 and 2, re-assertion, and the loss watcher (v0.13.0, 2026-08-17)
+
+M4. Replay runs at document-start in **every frame** for that frame's own host — capture is
+top-frame only, replay is not. It registers its own load listeners rather than joining
+`boot()`, because the seam between the two halves is meant to stay clean.
+
+**Storage entries are written only if the key is ABSENT.** Replay exists to restore what the
+container destroyed; a value still sitting there was not destroyed, which means this browser
+kept it and the user may have changed it since. Overwriting would stamp an old preference back
+over a newer one — the same harm as re-clicking a toggle that stayed on screen. Verified both
+ways: `wrote 1, left 0` on a wiped store, `wrote 0, left 1` when the user had changed the value
+on the site itself, and the page then came up with *their* value.
+
+**The click runner's own synthetic click was freezing the preference baseline.** On a host with
+both a taught gate and preferences, `realClick`'s dispatched pointerdown froze the baseline at
++7ms — document-start in all but name, the exact design the baseline exists to replace — and set
+`touched`, switching re-assertion off before the page had finished loading. Fix: the interaction
+watcher ignores untrusted events. Real user input is always trusted; another userscript clicking
+the page is not the user either. Measured on `fixture-simple.html` with both halves on one host,
+before and after.
+
+- **This is the "two halves must not interfere" seam failing quietly**, and it would never have
+  shown up on a host with only one half taught. When adding anything to either half, ask what it
+  does on a host that has both.
+
+**A timed audit cannot see a loss that happens after it, and `fixture-pref-hostile.html?reset=6000`
+proved it.** The first cut checked at load+3s, reported *"all 2 page preferences still hold"*,
+and the site took them back at +6s — a trace line claiming success over a page sitting in light
+mode, which is the precise failure mode that cost this project three versions on the click side.
+
+So the audit's positive line is scoped to what it can actually see — `hold as re-assertion
+finishes` — and everything after it is covered by a **read-only MutationObserver that reports the
+first loss and disconnects**. It never re-applies: re-assertion is deliberately bounded, and an
+observer that put things back would be an endless fight with the site and with the user.
+Measured: `LOST 2 of 2 … the site has put them back` at +6007ms, in the trace and in Recent
+activity.
+
+**"It holds" and "it holds because we kept putting it back" are different results and the audit
+says which.** A site that overwrites will win as soon as it moves its overwrite past the last
+re-assertion, so the summary line carries a re-assert count: `all 2 page preference(s) hold as
+re-assertion finishes (2 of them only because they were put back after the site overwrote them)`.
+
+- **This matters because re-assertion can mask a wrong-rung choice.** On `fixture-pref-ls.html`,
+  replaying only the class entries *works* — the site wipes the class at parse time and
+  re-assertion restores it at DOM ready. The end state is identical to the correct rung-2 choice.
+  Only `sawAtParse === null`, the flash, and the re-assert line distinguish them. Do not judge a
+  rung by the end state alone.
+
+**A pass that changed nothing writes no trace line.** `docs/PREFS.md` asks for a line per
+re-application; a heartbeat on every quiet pass would bury the one that matters under four times
+as many that do not. A re-application that changed nothing was not a re-application.
+
+Verified 2026-08-17: rung 1 (`data-theme` at document-start +3ms, `body` class deferred to DOM
+ready, storage untouched); rung 2 (`sawAtParse: "dark"` — the site read our value before any of
+its own script ran); the `ss` banner; re-assertion under attack; the loss watcher; the `touched`
+gate silencing the watcher after the user's own change; per-frame replay with the `⧉` prefix;
+master switch off killing both halves; both halves on one host; and the click half unchanged.
+
+**Not verified live: re-assertion's own `touched` gate**, as distinct from the watcher's. It
+needs a trusted interaction inside the first second of a page load and the test tooling cannot
+deliver one that fast. Inspected, not measured — say so rather than implying otherwise.
+
 ## Decisions that are not obvious from the code
 
 **Rules are keyed on the hostname of the document the gate is in — not the top page's.**

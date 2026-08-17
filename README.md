@@ -1,11 +1,12 @@
 # Forget Me Not
 
-A Violentmonkey userscript that dismisses "are you over 18" gates — and the cookie walls,
-"continue to site" interstitials and newsletter overlays that work the same way — but only
-on sites you have taught it, one at a time.
+A Violentmonkey userscript that keeps your site preferences — dark theme, closed sidebar, the
+age gate you have dismissed a hundred times — and puts them back on every visit, without the
+site being told anything. For browsers that throw away cookies and storage on every tab, where
+sites forget you on purpose and you pay for it in clicks.
 
-Nothing is detected, guessed or heuristic. On a site Forget Me Not has never seen, it does
-nothing at all.
+It works on sites you have taught it, one at a time. Nothing is detected, guessed or heuristic.
+On a site Forget Me Not has never seen, it does nothing at all.
 
 ## How it works
 
@@ -52,11 +53,14 @@ Fewer entries is better — keep the smallest set that works. An entry you leave
 that looks like an identifier is remembered only by name: its value is not stored anywhere.
 
 Nothing is ever sent to the site, and **Forget Me Not never writes a cookie**. The values are
-kept locally and written back into your own browser before the page loads.
+kept locally and written back into your own browser before the page loads — storage entries
+before any of the site's own scripts run, so it reads them as though they had always been there.
 
-> **Not finished yet (v0.12.0).** Capture and review work; putting the values back on a later
-> visit is the next piece of work. Until then this records what you chose and does nothing
-> with it.
+Some sites overwrite the page's own state while they start up, so anything set on the page is
+re-applied at a few points during loading, and then left alone the moment you touch the page.
+If a site takes a preference back anyway, that goes in **Recent activity** rather than being
+quietly swallowed. A stored value is never written over one that is already there: if your
+browser still has the site's own value, that is the one that wins.
 
 ## Scope
 

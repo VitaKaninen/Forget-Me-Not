@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        Forget Me Not
 // @namespace   https://github.com/VitaKaninen
-// @version     0.12.0
+// @version     0.13.0
 // @author      VitaKaninen
 // @description Teach it, once, which clicks dismiss a site's age gate, cookie wall or unwanted panel — then it remembers, and does that for you on every later visit. Nothing is guessed and nothing fires until you have taught it.
 // @match       *://*/*
@@ -85,7 +85,7 @@
     const TRACE_MAX = 600;            // trace lines kept; a few page loads' worth
     // Bump with @version. A trace file that does not say which build produced it is worth
     // much less when it arrives days later.
-    const VERSION = '0.12.0';
+    const VERSION = '0.13.0';
 
     // Rule shape:
     //   { host, subdomains, enabled, watchMs, steps: [Step], created, lastFired, fires }
@@ -825,7 +825,17 @@
         if (!hit || !seqs.length) {
             // Only the top frame says this. Every ad and analytics frame on the page
             // would otherwise report its own "no rule", burying the one line that matters.
-            if (isTop) dbg('no rule for ' + location.hostname + ' — Forget Me Not is doing nothing on this page');
+            if (isTop) {
+                // A host may legitimately have preferences and no taught clicks at all —
+                // clicking is the FALLBACK rung, not the main event. Saying "doing nothing
+                // on this page" over a rule that is replaying six preferences would be a
+                // trace line that lies.
+                const pf = hit && hit.rule && hit.rule.prefs;
+                const np = (pf && Array.isArray(pf.entries)) ? pf.entries.filter(e => e && e.enabled).length : 0;
+                dbg(np ? 'no taught clicks for ' + location.hostname + ' — ' + np +
+                         ' preference(s) are replayed here instead'
+                       : 'no rule for ' + location.hostname + ' — Forget Me Not is doing nothing on this page');
+            }
             return;
         }
 
@@ -1495,6 +1505,10 @@
     const FREEZE_ON = ['pointerdown', 'keydown', 'click'];
 
     let baseline = null;              // frozen snapshot, or null until first interaction
+    // Set in EVERY frame, unlike the baseline: replay is per frame, and "has the user
+    // touched this document?" is the question that stops re-assertion from stamping a
+    // preference back over one they deliberately changed mid-visit.
+    let touched = false;
 
     function storeMap(store) {
         const o = {};
@@ -1533,21 +1547,32 @@
         ss: storeMap(sessionStorage)
     });
 
-    if (isTop) {
-        const freeze = (e) => {
-            if (baseline) return;
-            // Narrate BEFORE snapshotting, not after. Under tests/gm-shim.js the trace
-            // lives in the page's own localStorage, so a line written after the snapshot
-            // would show up in every capture diff as a storage change the site never made.
-            // Costs nothing in the real script, where GM storage is a separate store.
-            dbg('preference baseline frozen at first ' + e.type +
-                ' — everything the site did before this is its own start-up, not a preference');
-            baseline = snapshot();
-            baseline.why = e.type;
-            for (const t of FREEZE_ON) window.removeEventListener(t, freeze, true);
+    (function watchInteraction() {
+        const onTouch = (e) => {
+            // TRUSTED events only, and this is load-bearing rather than fastidious: the
+            // click runner dispatches its own pointerdown/click, so without this guard a
+            // host that has both a taught gate and preferences froze its baseline at
+            // ~7ms — document-start in all but name, the very design the baseline exists
+            // to replace — and switched re-assertion off before the page had finished
+            // loading. Measured on fixture-simple.html with both halves on one host.
+            // Another userscript clicking the page is not the user either.
+            if (!e.isTrusted) return;
+            touched = true;
+            if (isTop && !baseline) {
+                // Narrate BEFORE snapshotting, not after. Under tests/gm-shim.js the trace
+                // lives in the page's own localStorage, so a line written after the
+                // snapshot would show up in every capture diff as a storage change the
+                // site never made. Costs nothing in the real script, where GM storage is
+                // a separate store.
+                dbg('preference baseline frozen at first ' + e.type +
+                    ' — everything the site did before this is its own start-up, not a preference');
+                baseline = snapshot();
+                baseline.why = e.type;
+            }
+            for (const t of FREEZE_ON) window.removeEventListener(t, onTouch, true);
         };
-        for (const t of FREEZE_ON) window.addEventListener(t, freeze, { capture: true, passive: true });
-    }
+        for (const t of FREEZE_ON) window.addEventListener(t, onTouch, { capture: true, passive: true });
+    })();
 
     // ---------------- Preferences: the classifier ----------------
     // Annotates and pre-decides; it never blocks. The user is the gate. It exists to save
@@ -1795,6 +1820,16 @@
                         drawRows();
                     });
                     cb.style.cssText += 'margin-top: 2px;';
+                    // A redacted entry has no value left, so there is nothing here to tick
+                    // — the box is empty, not forbidden. This is not the classifier
+                    // blocking a decision (it never does); it is the only state where
+                    // ticking could not possibly do anything, and a control that silently
+                    // does nothing is worse than one that explains itself.
+                    if (e.redacted) {
+                        cb.disabled = true;
+                        cb.title = 'Its value was not kept, so there is nothing to put back. ' +
+                            'Capture this site again to review it with its value.';
+                    }
 
                     const body = document.createElement('div');
                     body.style.cssText = 'flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px;';
@@ -1960,6 +1995,216 @@
             capturedAt: stored ? stored.captured : null
         });
     }
+
+    // ---------------- Preferences: replay ----------------
+    // Runs at document-start, in EVERY frame, for whatever rule matches that frame's own
+    // host — capture is top-frame only, replay is not, and the asymmetry is intended: a
+    // frame gets the rule for its own host, or it gets nothing.
+    //
+    // No interaction with the click runner, by design. If replay makes a gate not appear,
+    // the runner simply never matches step 1 and says so. The two halves share the
+    // settings UI, the host-keyed storage and the trace, and nothing else — which is why
+    // this section registers its own load listeners rather than joining boot().
+    const REASSERT_AT = 1000;         // ms after load, the last re-application
+
+    function prefsHere() {
+        if (!isOn()) return null;     // off means BOTH halves off. One switch.
+        const hit = ruleForHost(location.hostname);
+        const p = hit && hit.rule && hit.rule.prefs;
+        if (!p || !Array.isArray(p.entries)) return null;
+        // A redacted entry has no value left to write. It is already unticked, so this is
+        // belt-and-braces — but a hand-edited or imported rule could tick one, and that
+        // must not end with the string "null" written into a site's storage.
+        const on = p.entries.filter(e => e && e.enabled && !e.redacted);
+        return on.length ? { key: hit.key, entries: on } : null;
+    }
+
+    const targetFor = (sel) => (sel === 'body' ? document.body : document.documentElement);
+
+    // true / false / null, where null means "cannot tell yet" — <body> at document-start.
+    function domHolds(e) {
+        const el = targetFor(e.sel);
+        if (!el) return null;
+        if (e.kind === 'class') {
+            return (e.add && e.add.length) ? el.classList.contains(e.add[0])
+                                           : !el.classList.contains((e.remove || [])[0]);
+        }
+        return e.value === null ? !el.hasAttribute(e.name) : el.getAttribute(e.name) === e.value;
+    }
+
+    function applyDomEntry(e) {
+        const el = targetFor(e.sel);
+        if (!el) return false;
+        try {
+            if (e.kind === 'class') {
+                if (e.add && e.add.length) el.classList.add(e.add[0]);
+                else el.classList.remove((e.remove || [])[0]);
+            } else if (e.value === null) {
+                el.removeAttribute(e.name);
+            } else {
+                el.setAttribute(e.name, e.value);
+            }
+        } catch (_) { return false; }
+        return true;
+    }
+
+    // Written once, at document-start, before any site script — that is the whole trick of
+    // rung 2. Never re-asserted: by the time a site has started up it has already read
+    // whatever it was going to read, and writing again mid-visit would only fight a value
+    // the site chose, invisibly, until the next load.
+    function replayStorage(entries) {
+        let wrote = 0, kept = 0;
+        for (const e of entries) {
+            if (e.kind !== 'ls' && e.kind !== 'ss') continue;
+            if (e.value == null) continue;
+            const store = e.kind === 'ls' ? localStorage : sessionStorage;
+            try {
+                // ONLY IF ABSENT. Replay exists to restore what the container destroyed;
+                // a value still sitting there was not destroyed, which means this browser
+                // kept it and the user may have changed it since. Overwriting would stamp
+                // an old preference back over a newer one — the same harm as re-clicking a
+                // toggle that stayed on screen.
+                if (store.getItem(e.key) !== null) { kept++; continue; }
+                store.setItem(e.key, String(e.value));
+                wrote++;
+            } catch (_) {}
+        }
+        return { wrote, kept };
+    }
+
+    const replayed = new Map();       // entryId → applied at least once in this document
+    const reasserted = new Map();     // entryId → how many times the site overwrote it
+
+    function replayDom(entries) {
+        const first = [], back = [];
+        for (const e of entries) {
+            if (e.kind !== 'class' && e.kind !== 'attr') continue;
+            const holds = domHolds(e);
+            if (holds === null) continue;             // <body> not built yet; try next pass
+            const id = entryId(e);
+            if (!replayed.has(id)) {
+                // The FIRST application of an entry always happens, even after the user has
+                // touched the page. A body entry cannot be written before <body> exists, so
+                // gating this on `touched` too would mean a click during parsing silently
+                // cost you every preference on <body>.
+                if (!holds) applyDomEntry(e);
+                replayed.set(id, true);
+                first.push(entryLabel(e));
+                continue;
+            }
+            if (holds) continue;
+            // Re-assertion, and it stops at the first user interaction: a preference the
+            // user deliberately changed mid-visit must not be put back.
+            if (touched) continue;
+            if (applyDomEntry(e)) {
+                reasserted.set(id, (reasserted.get(id) || 0) + 1);
+                back.push(entryLabel(e));
+            }
+        }
+        return { first, back };
+    }
+
+    // The health signal. A pass that changed nothing is not a re-application and writes no
+    // line: docs/PREFS.md asks for a trace line per re-application, and a heartbeat on
+    // every quiet pass would bury the one that matters under four times as many that do
+    // not. A site that needs re-asserting is a site that is fighting us, and one that
+    // suddenly starts needing it has changed under the rule.
+    function replayPass(why, entries) {
+        const r = replayDom(entries);
+        if (r.first.length) dbg('applied at ' + why + ': ' + r.first.join(', '));
+        if (r.back.length) {
+            dbg('re-asserted at ' + why + ': ' + r.back.join(', ') +
+                ' — the site had overwritten ' + (r.back.length === 1 ? 'it' : 'them'));
+        }
+    }
+
+    // Called once, immediately after the last re-application. Without it, a replay that was
+    // quietly undone looks identical in the trace to one that worked — and a log claiming
+    // something happened when it did not is the failure mode that cost this project three
+    // versions on the click side. This is what makes the claim auditable.
+    function auditPrefs(entries) {
+        const dom = entries.filter(e => e.kind === 'class' || e.kind === 'attr');
+        if (!dom.length) return;
+        if (touched) { dbg('no preference audit — you interacted with the page, so anything that changed is yours'); return; }
+
+        const lost = dom.filter(e => domHolds(e) === false).map(entryLabel);
+        // "It holds" and "it holds because we kept putting it back" are not the same
+        // result, and a summary that conflates them is exactly the unauditable verdict
+        // this project has been bitten by. A site that overwrites is one that will win as
+        // soon as it moves its overwrite past the last re-assertion — and if a storage
+        // entry exists for the same preference, that is the steadier rung. This line is
+        // how the user finds out which case they are in.
+        const fought = dom.filter(e => reasserted.get(entryId(e))).length;
+        const how = fought ? ' (' + fought + ' of them only because ' +
+            (fought === 1 ? 'it was' : 'they were') + ' put back after the site overwrote ' +
+            (fought === 1 ? 'it' : 'them') + ')' : '';
+        if (lost.length) {
+            reportLost(lost, dom.length);
+        } else {
+            dbg('all ' + dom.length + ' page preference(s) hold as re-assertion finishes' + how);
+        }
+        watchForLosses(dom);
+    }
+
+    function reportLost(lost, total) {
+        dbg('LOST ' + lost.length + ' of ' + total + ' page preference(s) — re-assertion has finished and the site has put ' +
+            (lost.length === 1 ? 'it' : 'them') + ' back: ' + lost.join(', '));
+        log(lost.length + ' preference(s) did not survive: ' + lost.join(', '));
+    }
+
+    // A check at one fixed moment cannot see a site that takes the preference away later,
+    // and that is not hypothetical: `fixture-pref-hostile.html?reset=6000` normalises the
+    // root class after the last re-application, and a timed audit reported "all preferences
+    // still hold" over a page that was already back in light mode three seconds later.
+    // A trace that says that is worse than one that says nothing.
+    //
+    // So the audit's positive line is scoped to what it can actually see ("as re-assertion
+    // finishes"), and everything after it is covered by this: observe, never re-apply,
+    // report the first loss and stop. Re-applying here would be the hazard re-assertion is
+    // already bounded to avoid — an endless fight with the site, and with the user.
+    function watchForLosses(dom) {
+        const names = ['class'];
+        for (const e of dom) if (e.kind === 'attr' && names.indexOf(e.name) === -1) names.push(e.name);
+        let obs = null;
+        const stop = () => { try { obs.disconnect(); } catch (_) {} obs = null; };
+        try {
+            obs = new MutationObserver(() => {
+                if (!obs) return;
+                if (touched) { stop(); return; }
+                const lost = dom.filter(e => domHolds(e) === false).map(entryLabel);
+                if (!lost.length) return;
+                stop();
+                reportLost(lost, dom.length);
+            });
+            obs.observe(document.documentElement,
+                { attributes: true, subtree: true, attributeFilter: names });
+        } catch (_) {}
+    }
+
+    (function replayBoot() {
+        const p = prefsHere();
+        if (!p) return;
+        const s = replayStorage(p.entries);
+        const d = replayDom(p.entries);
+        dbg('replaying preferences for ' + p.key + ' — storage: wrote ' + s.wrote + ', left ' + s.kept +
+            ' already there' + (d.first.length ? '; page: ' + d.first.join(', ') : '; nothing on the page yet'));
+
+        const later = (why) => replayPass(why, p.entries);
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', () => later('DOM ready'), { once: true });
+        } else {
+            later('DOM ready');
+        }
+        const onLoad = () => {
+            later('load');
+            setTimeout(() => {
+                later('load+' + (REASSERT_AT / 1000) + 's');
+                auditPrefs(p.entries);          // immediately after the LAST re-application
+            }, REASSERT_AT);
+        };
+        if (document.readyState === 'complete') setTimeout(onLoad, 0);
+        else window.addEventListener('load', onLoad, { once: true });
+    })();
 
     // ---------------- Testing a rule against this page ----------------
     let testWait = null;   // { key, found } while a broadcast test is outstanding
