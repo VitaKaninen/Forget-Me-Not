@@ -53,6 +53,21 @@
   window.__wired = false;
   window.__wireAt = WIRE_AT;
 
+  // ?churn=1 mimics what MediaWiki does to <html> during start-up: a stream of class
+  // changes on the root element, plus ancestor boxes still settling. A success test that
+  // looks at <body>/<html> classes or at ancestor SIZES sees this and concludes that the
+  // click it just made worked — so a dead click gets recorded as a dismissal and the step
+  // is never tried again. This is the state a page is in exactly when a click fires with
+  // debug off, which is why the bug hid behind debug mode for three versions.
+  if (new URLSearchParams(location.search).get('churn')) {
+    let n = 0;
+    const t = setInterval(() => {
+      document.documentElement.className = 'client-js vector-feature-' + (n % 3) + ' step-' + (n++);
+      document.body.style.paddingTop = (n % 4) + 'px';
+      if (n > 60) clearInterval(t);
+    }, 100);
+  }
+
   setTimeout(() => {
     const ov = document.getElementById('overlay');
     ov.querySelector('#enter').addEventListener('click', () => ov.remove());

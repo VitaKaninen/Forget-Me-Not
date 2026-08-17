@@ -53,6 +53,10 @@ were reading — so teaching it once fixes every site that embeds the same playe
 - **Recent activity** — what actually fired, so a broken rule is distinguishable from a
   site that simply did not show its gate this time
 - Export / import rules as JSON
+- **Save trace** — downloads everything GateSkip has narrated recently as a `.txt`, kept
+  whether or not debug mode is on. This is the one to send when something does not work:
+  debug mode delays every click by five seconds, which is often enough to make a failure
+  stop happening, so the trace is the only record of the case that actually breaks.
 
 Nothing appears on the page during normal browsing.
 
@@ -89,6 +93,9 @@ Turning it off mid-countdown cancels the pending click; the next tick clicks nor
   ancestor chain — and clicks again if nothing moved, up to eight times over about sixteen
   seconds. The gaps grow, because what it is waiting for is a script that will take as long
   as it takes and gives no signal while it does.
+- **Each step says which signal convinced it.** "counted as done — the step stopped
+  resolving", or which property changed. A verdict you cannot audit is indistinguishable
+  from a wrong one.
 - **It says so when a click achieved nothing.** Running out of attempts with no reaction is
   logged as exactly that, rather than as a dismissal. "GateSkip did nothing" and "GateSkip did
   something that had no effect" are different problems and now read differently.

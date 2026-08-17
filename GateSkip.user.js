@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        GateSkip
 // @namespace   https://github.com/VitaKaninen
-// @version     0.5.0
+// @version     0.6.0
 // @author      VitaKaninen
 // @description Teach it, once, which clicks dismiss a site's age gate, cookie wall or unwanted panel — then it does that for you on every later visit. Nothing is guessed and nothing fires until you have taught it.
 // @match       *://*/*
@@ -33,6 +33,7 @@
     const WATCH_KEY = 'gs_watch';     // GM: default watch window, ms
     const LOG_KEY = 'gs_log';         // GM: [{ t, host, m }] — newest first, capped
     const DEBUG_KEY = 'gs_debug';     // GM: true to narrate + delay every click
+    const TRACE_KEY = 'gs_trace';     // GM: [line] — the narration, kept whether debug is on or not
     const TEACH_KEY = 'gs_teach';     // sessionStorage (top frame): teaching in progress
 
     // How long to keep looking. Measured from the last point the page reached, not from
@@ -57,6 +58,10 @@
     const VERIFY_WAIT = [450, 600, 800, 1000, 1200, 1200, 1200, 1200];
     const MAX_RESTARTS = 2;           // re-runs allowed when the page replaces the gate
     const LOG_MAX = 120;
+    const TRACE_MAX = 600;            // trace lines kept; a few page loads' worth
+    // Bump with @version. A trace file that does not say which build produced it is worth
+    // much less when it arrives days later.
+    const VERSION = '0.6.0';
     const DEBUG_DELAY = 5000;         // debug mode: how long to show the target first
 
     // Rule shape:
@@ -275,22 +280,34 @@
     // which then ate all four attempts and left the panel toggled back open. Sizes come
     // along because a section collapsing is often the only visible consequence, and it
     // changes an ancestor's height without changing anybody's class.
+    // Ancestor CLASSES only, and never <body> or <html>.
+    //
+    // Both exclusions are load-bearing, and getting them wrong is worse than having no
+    // check at all — a false positive here means a dead click is recorded as a dismissal
+    // and the step is never tried again. Sizes were the first mistake: while a page is
+    // still laying out, every ancestor box is changing anyway, so any click during load
+    // "worked". <body> and <html> were the second: MediaWiki rewrites the root element's
+    // class list all through start-up (client-js, vector-feature-*, mw-ready), so a click
+    // on Wikipedia during load always found something moving. That is exactly the window
+    // a click fires in when debug is off, which is why it "only worked with debug on" —
+    // the five second delay pushed the click past the noise.
     function ancestry(el) {
         const out = [];
-        let cur = el;
-        for (let i = 0; i < 6 && cur && cur.nodeType === 1; i++) {
-            let dim = '';
-            try {
-                const r = cur.getBoundingClientRect();
-                dim = Math.round(r.width) + 'x' + Math.round(r.height);
-            } catch (_) {}
-            out.push((cur.getAttribute('class') || '') + '|' + dim);
+        let cur = el && el.parentElement;
+        for (let i = 0; i < 5 && cur && cur.nodeType === 1; i++) {
+            if (cur === document.body || cur === document.documentElement) break;
+            out.push(cur.getAttribute('class') || '');
             cur = cur.parentElement;
         }
         return out.join('\n');
     }
 
     function clickState(el) {
+        let size = '';
+        try {
+            const r = el.getBoundingClientRect();
+            size = Math.round(r.width) + 'x' + Math.round(r.height);
+        } catch (_) {}
         return {
             gone: !el || !el.isConnected,
             vis: isVisible(el),
@@ -300,13 +317,20 @@
             pressed: (el && el.getAttribute('aria-pressed')) || '',
             selected: (el && el.getAttribute('aria-selected')) || '',
             ahidden: (el && el.getAttribute('aria-hidden')) || '',
+            // The clicked element's OWN box is a fair signal — it collapsing or being
+            // hidden is the consequence. Its ancestors' boxes are not.
+            size: size,
+            cls: (el && el.getAttribute('class')) || '',
             anc: el ? ancestry(el) : '',
             url: location.href
         };
     }
-    function stateMoved(a, b) {
-        for (const k in a) if (a[k] !== b[k]) return true;
-        return false;
+    // Returns the name of the field that moved, so the trace can say WHY a step was
+    // counted as done. Without that, a wrong verdict is indistinguishable from a right
+    // one in the log, which cost this project three rounds of misdiagnosis.
+    function whatMoved(a, b) {
+        for (const k in a) if (a[k] !== b[k]) return k;
+        return '';
     }
 
     const esc = (s) => (window.CSS && CSS.escape) ? CSS.escape(s) : String(s).replace(/[^\w-]/g, '\\$&');
@@ -607,8 +631,12 @@
             // Two independent signs of life: the element moved, or the step stopped
             // resolving (whole-subtree teardown leaves the measured node detached, and a
             // detached node's parent class tells you nothing).
-            const moved = stateMoved(v.before, clickState(v.hit));
-            if (moved || !resolveStep(run.rule.steps[run.idx])) {
+            const moved = whatMoved(v.before, clickState(v.hit));
+            const stillThere = resolveStep(run.rule.steps[run.idx]);
+            if (moved || !stillThere) {
+                dbg('step ' + (run.idx + 1) + ' counted as done — ' +
+                    (!stillThere ? 'the step stopped resolving' : "'" + moved + "' changed") +
+                    ' [doc ' + document.readyState + ']');
                 if (run.mark) { try { run.mark.setLabel('GateSkip: click worked'); } catch (_) {} run.mark = null; }
                 commitClick(now);
                 return;
@@ -1011,10 +1039,38 @@
     // Console as well as the HUD: the HUD dies with the document, and the most confusing
     // gates are the ones that navigate as they close.
     function dbg(m) {
+        // Recorded whether or not debug is on. The whole difficulty with this script has
+        // been that the broken case is the one with no observer in it: turning debug on to
+        // find out why something fails changes the timing enough to make it succeed, so
+        // the failure is never the thing being watched. The trace is the same narration
+        // written to storage, where it costs nothing and is there afterwards.
+        trace(m);
         if (!isDebug()) return;
         try { console.log('[GateSkip] ' + location.hostname + ' — ' + m); } catch (_) {}
         if (isTop) hudLine(location.hostname, m, false);
         else toTop({ type: 'dbg', m: String(m), host: location.hostname });
+    }
+
+    // Written straight to GM storage from whichever frame produced the line — GM storage
+    // is shared across frames, so this needs no messaging and works in a frame whose
+    // parent never hears from it. Timestamps are wall clock plus milliseconds since this
+    // document started, because "how long after the page began" is the number that has
+    // mattered every single time.
+    const T0 = Date.now();
+    function trace(m) {
+        try {
+            const t = new Date();
+            const stamp = String(t.getHours()).padStart(2, '0') + ':' +
+                String(t.getMinutes()).padStart(2, '0') + ':' +
+                String(t.getSeconds()).padStart(2, '0') + '.' +
+                String(t.getMilliseconds()).padStart(3, '0');
+            const line = stamp + '  +' + String(Date.now() - T0).padStart(6) + 'ms  ' +
+                (isTop ? '' : '⧉ ') + location.hostname + '  ' + m;
+            const l = readJson(TRACE_KEY, []);
+            if (!Array.isArray(l)) return;
+            l.push(line);
+            writeJson(TRACE_KEY, l.slice(-TRACE_MAX));
+        } catch (_) {}
     }
 
     // ---------------- Cross-frame messaging ----------------
@@ -1713,6 +1769,49 @@
         importBtn.title = 'Paste exported JSON to merge rules in. Existing hosts are overwritten.';
         importBtn.addEventListener('click', () => showIo(''));
 
+        // The trace is kept whether or not debug is on, which is the point: the case that
+        // fails is the one nobody is watching, and switching debug on to watch it changes
+        // the timing enough to make it pass.
+        const traceBtn = smallBtn('Save trace', '#cba6f7', '#11111b');
+        traceBtn.title = 'Download everything GateSkip has narrated recently — including ' +
+            'with debug off — as a .txt file.';
+        traceBtn.addEventListener('click', () => {
+            const lines = readJson(TRACE_KEY, []);
+            if (!Array.isArray(lines) || !lines.length) {
+                status.style.color = '#f9e2af';
+                status.textContent = 'The trace is empty — load a page with a rule on it first.';
+                return;
+            }
+            const text = 'GateSkip trace — ' + new Date().toString() + '\n' +
+                'script v' + VERSION + ', ' + lines.length + ' lines\n' +
+                'user agent: ' + navigator.userAgent + '\n' +
+                ''.padEnd(70, '-') + '\n' + lines.join('\n') + '\n';
+            try {
+                const url = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'gateskip-trace-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19) + '.txt';
+                (document.body || document.documentElement).appendChild(a);
+                a.click();
+                a.remove();
+                setTimeout(() => { try { URL.revokeObjectURL(url); } catch (_) {} }, 10000);
+                status.style.color = '#a6e3a1';
+                status.textContent = 'Trace saved (' + lines.length + ' lines).';
+            } catch (_) {
+                // A page with a restrictive CSP can refuse the blob: URL. The paste box
+                // always works, so the trace is never actually unreachable.
+                showIo(text);
+            }
+        });
+
+        const clearTraceBtn = smallBtn('Clear trace', '#45475a', '#cdd6f4');
+        clearTraceBtn.title = 'Empty the trace, so the next page load starts a clean one.';
+        clearTraceBtn.addEventListener('click', () => {
+            writeJson(TRACE_KEY, []);
+            status.style.color = '#a6e3a1';
+            status.textContent = 'Trace cleared.';
+        });
+
         const status = document.createElement('span');
         status.style.cssText = 'font-size: 11px; color: #a6e3a1; flex: 1; min-width: 0;' +
             'overflow: hidden; text-overflow: ellipsis; white-space: nowrap;';
@@ -1720,7 +1819,7 @@
         const closeBtn = smallBtn('Close', '#89b4fa');
         closeBtn.addEventListener('click', () => host.remove());
 
-        foot.append(teachBtn, exportBtn, importBtn, status, closeBtn);
+        foot.append(teachBtn, exportBtn, importBtn, traceBtn, clearTraceBtn, status, closeBtn);
 
         const io = document.createElement('div');
         io.style.cssText = 'display: none; flex-direction: column; gap: 6px;';

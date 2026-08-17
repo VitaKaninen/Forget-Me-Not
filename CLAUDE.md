@@ -103,6 +103,42 @@ step counts as done only once the page demonstrably moved.
 - Exhausting the attempts is **reported, not swallowed** — `run.noop` downgrades the
   completion line to "ran all N clicks, but at least one of them changed nothing".
 
+## The success test was reading the page's start-up as success (v0.6.0, 2026-08-17)
+
+**This was the actual bug behind "only works with debug on", and v0.3.0–v0.5.0 all
+misdiagnosed it as timing.** The click with debug off lands while the document is still
+loading. `clickState` compared ancestor **sizes** — which change constantly while a page lays
+out — and walked up as far as `<body>` and `<html>`, whose class list MediaWiki rewrites all
+through start-up (`client-js`, `vector-feature-*`, `mw-ready`). So the verification saw motion
+and counted the dead click as a dismissal: no retries, `sequence complete`, and a log line
+claiming success over a gate that never moved. The five-second `DEBUG_DELAY` pushed the click
+past the noisy window, which is the entire reason debug mode "fixed" it.
+
+`ancestry()` now takes **classes only**, of at most 5 ancestors, and **stops before `<body>`
+and `<html>`**. The clicked element's own box size is still compared — that one is a fair
+signal, since collapsing or hiding is the consequence.
+
+- **A false positive here is far worse than a false negative**, and the earlier note in this
+  file saying the opposite ("a false positive is merely the old behaviour") was wrong. A false
+  negative costs a few extra clicks. A false positive writes the step off permanently *and*
+  logs a dismissal that never happened — it destroys the log's credibility, which is the only
+  instrument there is.
+- **Every commit now names the signal that fired** (`counted as done — 'anc' changed`, or
+  `— the step stopped resolving`). A verdict you cannot audit is how three versions of
+  misdiagnosis happened; do not remove this.
+- Reproduce with `tests/fixture-late.html?wire=8000&churn=1`. v0.5.0 fails it while logging
+  "dismissed the gate (2 clicks)" with the gate still up.
+
+## The trace: the broken case is the one with no observer in it
+
+`dbg()` writes to `gs_trace` (GM, capped at `TRACE_MAX`) **whether or not debug is on**, and
+Settings has **Save trace** (Blob download) / **Clear trace**. This exists because of the
+structural problem that made this bug take four attempts: turning debug on to find out why
+something fails changes the timing enough to make it succeed, so the failing case was never
+the one being watched. Each line carries `+NNNNms` since that document started, because "how
+long after the page began" is the number that has mattered every single time. Frames write
+straight to GM storage (shared across frames), so no messaging is involved.
+
 ## The retry ladder has to outlast the page's start-up (v0.5.0, 2026-08-17)
 
 Third time the same confound produced the same misleading symptom, so it is worth stating as
