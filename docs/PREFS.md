@@ -47,7 +47,10 @@ today's rule, moved down a level.
 {
   "en.wikipedia.org": {
     v: 2,
-    clicks: { steps: [...], watchMs, fires, lastFired },   // unchanged, may be absent
+    host, subdomains, enabled,
+    clicks: [                                              // ARRAY — see below
+      { id, label, steps: [...], watchMs, fires, lastFired, created }
+    ],
     prefs: {
       captured: "2026-08-17T…",
       entries: [ /* see below */ ]
@@ -55,6 +58,13 @@ today's rule, moved down a level.
   }
 }
 ```
+
+**`clicks` is an array of independent sequences, corrected 2026-08-17** — this section
+originally drafted it as a single object. One host routinely needs a second, unrelated
+dismissal taught several pages deeper, and that cannot be expressed as extra *steps*: a
+sequence blocks on step N before hunting N+1, so a deep-page popup appended as "step 3" fires
+on neither page. Each sequence arms simultaneously and self-selects by whether its step 1
+resolves — no URL matching. Implemented in v0.11.0; reasoning in `../CLAUDE.md`.
 
 Entry kinds, smallest-blast-radius first:
 
@@ -78,10 +88,11 @@ path entirely, so it is nearly free. Drop it the moment it costs anything.
 
 **There is no migration, and no v1 read path. Corrected 2026-08-17.** This section used to say
 a v1 rule (bare `steps`) is rewritten on read, and to "keep the migration for a long time; rules
-are hand-taught and expensive to lose". The premise was wrong — the user settled it: *"there is
-no need to keep any of it. It takes about 5 seconds to recreate it."* The keys move `gs_*` →
-`fmn_*`, the old ones are deleted once on first run, and anything taught before that is
-re-taught. Write the shape clean rather than carrying a compatibility path nobody needs.
+are hand-taught and expensive to lose". The premise was wrong — the user settled it, twice, the
+second time emphatically: rules cost seconds to recreate and will be wiped 30–50 times before
+this project is done. **Rule loss is not a cost and must not appear in any design argument** —
+including the seductive one that a schema should be settled early "while the shape is open".
+Reshape storage whenever it is convenient. See `../HANDOFF.md` for the full statement.
 
 ## Capture — "Remember this site"
 

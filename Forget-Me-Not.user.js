@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        Forget Me Not
 // @namespace   https://github.com/VitaKaninen
-// @version     0.10.0
+// @version     0.11.0
 // @author      VitaKaninen
 // @description Teach it, once, which clicks dismiss a site's age gate, cookie wall or unwanted panel — then it remembers, and does that for you on every later visit. Nothing is guessed and nothing fires until you have taught it.
 // @match       *://*/*
@@ -85,7 +85,7 @@
     const TRACE_MAX = 600;            // trace lines kept; a few page loads' worth
     // Bump with @version. A trace file that does not say which build produced it is worth
     // much less when it arrives days later.
-    const VERSION = '0.10.0';
+    const VERSION = '0.11.0';
 
     // Rule shape:
     //   { host, subdomains, enabled, watchMs, steps: [Step], created, lastFired, fires }
@@ -138,7 +138,12 @@
         if (seq.label) return seq.label;
         const steps = seq.steps || [];
         const named = steps.find(s => s && s.text) || steps[0];
-        return (named && named.label) || ('sequence ' + (i + 1));
+        if (!named || !named.label) return 'sequence ' + (i + 1);
+        // describe() formats a label as `button — “Enter site”`, which is right for the
+        // step list in Settings but reads badly once quoted again in a log line
+        // (`“button — “Enter site”” saved`). Unwrap to just the caption when there is one.
+        const m = /^[a-z0-9-]+ — “(.+)”$/.exec(named.label);
+        return m ? m[1] : named.label;
     }
 
     // One-time removal of the v1 keys. Deleting rather than reading: rules are cheap to
@@ -552,20 +557,39 @@
 
     // ---------------- Runner ----------------
 
-    let run = null;        // { rule, key, idx, deadline, obs, timer, settleUntil }
+    // One run per armed SEQUENCE, all hunting the same document at once. They are fully
+    // independent — separate idx, deadline, verify state and clicked list — because they
+    // represent unrelated dismissals that happen to share a host. The timer and the
+    // observer are shared: they are per-document, and N intervals would be N times the
+    // work for identical wake-ups.
+    let runs = [];
+    let watcher = null;    // { obs, timer } — shared by every run
     let armedUrl = null;   // the URL the current watch window belongs to
 
+    function stopWatcher() {
+        if (!watcher) return;
+        try { if (watcher.obs) watcher.obs.disconnect(); } catch (_) {}
+        try { if (watcher.timer) clearInterval(watcher.timer); } catch (_) {}
+        watcher = null;
+    }
+
     function disarm() {
-        if (!run) return;
-        try { if (run.obs) run.obs.disconnect(); } catch (_) {}
-        try { if (run.timer) clearInterval(run.timer); } catch (_) {}
-        run = null;
+        runs = [];
+        stopWatcher();
+    }
+
+    // Retire one run without touching the others. The watcher only stops once the last
+    // run is gone, so a short sequence finishing does not blind a long one still hunting.
+    function retire(r) {
+        const i = runs.indexOf(r);
+        if (i !== -1) runs.splice(i, 1);
+        if (!runs.length) stopWatcher();
     }
 
     // A click is not an outcome. Every click is followed by a look at whether the page
     // moved at all, and a step is only counted as done once something did — see
     // clickState() for what counts. Three states, in order: fire, wait, check.
-    function fireClick(v, now) {
+    function fireClick(r, v, now) {
         // Cycled, not clamped: with one candidate every attempt repeats it, which is what a
         // control that is merely not wired up yet needs, and with several the extra attempts
         // come back round to the first.
@@ -574,73 +598,73 @@
         v.phase = 'check';
         const grace = VERIFY_WAIT[Math.min(v.tries - 1, VERIFY_WAIT.length - 1)];
         v.at = now + grace;
-        run.settleUntil = now + grace;
+        r.settleUntil = now + grace;
         // A retry cycle must not be cut short by the watch window closing under it.
-        run.deadline = Math.max(run.deadline, now + grace + 4000);
+        r.deadline = Math.max(r.deadline, now + grace + 4000);
         realClick(v.hit);
         // readyState is worth saying out loud: a click that lands while the document is
         // still 'loading' or 'interactive' is the one most likely to hit markup whose
         // handler has not been attached yet, and that is invisible from anywhere else.
-        dbg('clicked step ' + (run.idx + 1) + ' of ' + run.seq.steps.length +
+        dbg(r.tag + 'clicked step ' + (r.idx + 1) + ' of ' + r.seq.steps.length +
             ' [doc ' + document.readyState + ']' +
             (v.max > 1 ? ' (attempt ' + v.tries + ' of ' + v.max + ')' : '') +
             (v.hit !== v.el ? ' — on ' + descEl(v.hit) + ' around the ' + descEl(v.el) + ' taught'
                             : (v.cands.length > 1 ? ' — on the ' + descEl(v.el) + ' taught' : '')));
     }
 
-    function beginClick(el, now) {
+    function beginClick(r, el, now) {
         const cands = clickCandidates(el);
-        run.verify = {
+        r.verify = {
             el, cands, hit: null, before: null, tries: 1, phase: 'check', at: 0,
             // Every candidate gets at least one go, plus a repeat of the first.
             max: Math.max(CLICK_TRIES, cands.length + 1)
         };
         if (cands.length > 1) {
-            dbg('step ' + (run.idx + 1) + ': the element taught is ' + descEl(el) +
+            dbg(r.tag + 'step ' + (r.idx + 1) + ': the element taught is ' + descEl(el) +
                 ', which nothing listens on by itself — will try ' +
                 cands.map(descEl).join(', then '));
         }
-        fireClick(run.verify, now);
+        fireClick(r, r.verify, now);
     }
 
     // Called once the click is known to have landed, so the bookkeeping that says "this
     // step is behind us" happens exactly where that becomes true.
-    function commitClick(now) {
-        const v = run.verify;
-        run.verify = null;
-        run.clicked.push(v.el);
-        if (v.hit && v.hit !== v.el) run.clicked.push(v.hit);
-        run.idx++;
-        run.settleUntil = now + SETTLE_MS;
+    function commitClick(r, now) {
+        const v = r.verify;
+        r.verify = null;
+        r.clicked.push(v.el);
+        if (v.hit && v.hit !== v.el) r.clicked.push(v.hit);
+        r.idx++;
+        r.settleUntil = now + SETTLE_MS;
 
         // The restart test further down asks whether step 1 stopped resolving and then
         // started resolving again, because a page that detaches and re-attaches the SAME
         // node cannot be caught by node identity. That vanish now happens during the
-        // verify window — before run.done is ever set — so unless it is recorded here it
+        // verify window — before r.done is ever set — so unless it is recorded here it
         // is simply lost, and the gate coming back reads as a gate that never left.
         // Introduced by the verify/retry cycle; the old code clicked and completed in one
         // step, so the done-branch always saw it.
-        if (!resolveStep(run.seq.steps[0])) run.vanished = true;
+        if (!resolveStep(r.seq.steps[0])) r.vanished = true;
 
-        if (run.idx >= run.seq.steps.length) {
-            run.done = true;
+        if (r.idx >= r.seq.steps.length) {
+            r.done = true;
             // Counters live on the SEQUENCE, not the host: with several sequences per host
             // a shared counter could not answer "is this particular one still working?",
             // which is the only question the number is for. Located by id rather than by
             // index — Settings can delete a sequence while a run holds a reference to it.
             const rules = getRules();
-            const seq = seqsOf(rules[run.key]).find(s => s.id === run.seq.id);
+            const seq = seqsOf(rules[r.key]).find(s => s.id === r.seq.id);
             if (seq) {
                 seq.lastFired = Date.now();
                 seq.fires = (seq.fires || 0) + 1;
                 saveRules(rules);
             }
-            const n = run.seq.steps.length;
-            log(run.noop
-                ? ('ran all ' + n + (n === 1 ? ' click' : ' clicks') + ' of “' + run.name +
+            const n = r.seq.steps.length;
+            log(r.noop
+                ? ('ran all ' + n + (n === 1 ? ' click' : ' clicks') + ' of “' + r.name +
                    '”, but at least one of them changed nothing on the page')
-                : ('dismissed “' + run.name + '” (' + n + (n === 1 ? ' click)' : ' clicks)')));
-            dbg('sequence complete — still watching until the window ends, in case the page puts the gate back');
+                : ('dismissed “' + r.name + '” (' + n + (n === 1 ? ' click)' : ' clicks)')));
+            dbg(r.tag + 'sequence complete — still watching until the window ends, in case the page puts the gate back');
             // Not disarmed — the window stays open for the re-render case below. The
             // deadline is what ends it.
         }
@@ -650,29 +674,34 @@
         // `recording` and not just `teaching`: in a FRAME being taught, `teaching` is
         // false (the popup and its state live only in the top frame), so gating on that
         // alone would let an already-taught rule auto-click the very gate being recorded.
-        if (!run || teaching || recording) return;
+        if (teaching || recording || !runs.length) return;
         const now = Date.now();
-        if (now < run.settleUntil) return;
+        // Copied, because tickRun can retire a run mid-loop.
+        for (const r of runs.slice()) tickRun(r, now);
+    }
+
+    function tickRun(r, now) {
+        if (now < r.settleUntil) return;
 
         // A click has been made and is being judged. Nothing else may run until it is
         // settled, or a step that quietly did nothing would be followed by a hunt for the
         // next one — which is how a rule used to report success having achieved nothing.
-        if (run.verify) {
-            const v = run.verify;
+        if (r.verify) {
+            const v = r.verify;
             if (now < v.at) return;
 
             if (v.phase === 'wait') {
                 // Re-resolve rather than reusing the node: between attempts the page may
                 // have re-rendered the control, and clicking a detached copy of it is a
                 // guaranteed no-op that would burn the remaining attempts.
-                const fresh = resolveStep(run.seq.steps[run.idx]);
+                const fresh = resolveStep(r.seq.steps[r.idx]);
                 if (!fresh) {
-                    dbg('step ' + (run.idx + 1) + ' went away before the retry — taking that as the click having worked');
-                    commitClick(now);
+                    dbg(r.tag + 'step ' + (r.idx + 1) + ' went away before the retry — taking that as the click having worked');
+                    commitClick(r, now);
                     return;
                 }
                 if (fresh !== v.el) { v.el = fresh; v.cands = clickCandidates(fresh); }
-                fireClick(v, now);
+                fireClick(r, v, now);
                 return;
             }
 
@@ -680,24 +709,24 @@
             // resolving (whole-subtree teardown leaves the measured node detached, and a
             // detached node's parent class tells you nothing).
             const moved = whatMoved(v.before, clickState(v.hit));
-            const stillThere = resolveStep(run.seq.steps[run.idx]);
+            const stillThere = resolveStep(r.seq.steps[r.idx]);
             if (moved || !stillThere) {
-                dbg('step ' + (run.idx + 1) + ' counted as done — ' +
+                dbg(r.tag + 'step ' + (r.idx + 1) + ' counted as done — ' +
                     (!stillThere ? 'the step stopped resolving' : "'" + moved + "' changed") +
                     ' [doc ' + document.readyState + ']');
-                commitClick(now);
+                commitClick(r, now);
                 return;
             }
 
             if (v.tries >= v.max) {
-                run.noop = true;
-                log('step ' + (run.idx + 1) + ' of ' + run.seq.steps.length +
+                r.noop = true;
+                log('step ' + (r.idx + 1) + ' of ' + r.seq.steps.length + ' of “' + r.name + '”' +
                     ' was clicked ' + v.max + ' times (' + v.cands.map(descEl).join(', ') +
                     ') and the page never reacted — re-teaching this step will record a better target');
-                dbg('step ' + (run.idx + 1) + ': ' + v.max + ' clicks across ' +
+                dbg(r.tag + 'step ' + (r.idx + 1) + ': ' + v.max + ' clicks across ' +
                     v.cands.map(descEl).join(', ') + ' and nothing moved on the page at all' +
                     ' — giving up on this step; re-teach it to record a better target');
-                commitClick(now);
+                commitClick(r, now);
                 return;
             }
 
@@ -705,30 +734,32 @@
             v.tries++;
             v.phase = 'wait';
             v.at = now + wait;
-            run.settleUntil = now + wait;
-            run.deadline = Math.max(run.deadline, now + wait + VERIFY_WAIT[VERIFY_WAIT.length - 1] + 4000);
-            dbg('step ' + (run.idx + 1) + ': nothing on the page changed — attempt ' + v.tries +
+            r.settleUntil = now + wait;
+            r.deadline = Math.max(r.deadline, now + wait + VERIFY_WAIT[VERIFY_WAIT.length - 1] + 4000);
+            dbg(r.tag + 'step ' + (r.idx + 1) + ': nothing on the page changed — attempt ' + v.tries +
                 ' of ' + v.max + ' in ' + wait + 'ms');
             return;
         }
 
-        if (now > run.deadline) {
+        if (now > r.deadline) {
             // Half-done is the interesting case: the gate was there and the first clicks
             // landed, so the rule is real but no longer complete. Silence there would be
             // exactly the "did it break or was there no gate?" ambiguity worth avoiding.
-            if (!run.done && run.idx > 0) {
-                log('gave up after step ' + run.idx + ' of ' + run.seq.steps.length +
-                    ' — the rest of the sequence never appeared');
+            if (!r.done && r.idx > 0) {
+                log('gave up after step ' + r.idx + ' of ' + r.seq.steps.length + ' of “' + r.name +
+                    '” — the rest of the sequence never appeared');
             }
-            // The single most useful line in debug mode. If the gate did not show up on
+            // The single most useful line in the trace. If the gate did not show up on
             // this visit, this says so explicitly, which is what separates "Forget Me Not
-            // dismissed it" from "the site did not gate you this time".
-            dbg(run.done
+            // dismissed it" from "the site did not gate you this time". With several
+            // sequences armed, a NEVER MATCHED line is the NORMAL result for all but the
+            // one whose gate is on this page — that is the design, not a fault.
+            dbg(r.tag + (r.done
                 ? 'watch window ended — the sequence had run'
-                : (run.idx > 0
-                    ? 'watch window ended after step ' + run.idx + ' of ' + run.seq.steps.length + ' — the rest never appeared'
-                    : 'watch window ended and step 1 NEVER MATCHED — no gate was found on this page, so nothing here was clicked by Forget Me Not'));
-            disarm();
+                : (r.idx > 0
+                    ? 'watch window ended after step ' + r.idx + ' of ' + r.seq.steps.length + ' — the rest never appeared'
+                    : 'watch window ended and step 1 NEVER MATCHED — this sequence found nothing on this page')));
+            retire(r);
             return;
         }
         // Finished the sequence once, but the window is still open, because a click can
@@ -749,26 +780,26 @@
         // screen. That is the case where a second click is actively harmful — on a
         // checkbox step it would untick what the first click ticked — and a gate that
         // never disappears is a rule that is wrong, not a rule that should try harder.
-        if (run.done) {
-            if (run.restarts >= MAX_RESTARTS) return;
-            const first = resolveStep(run.seq.steps[0]);
-            if (!first) { run.vanished = true; return; }
-            if (!run.vanished && run.clicked.indexOf(first) !== -1) return;
-            run.restarts++;
-            run.vanished = false;
-            run.idx = 0;
-            run.done = false;
-            run.noop = false;   // a fresh run gets to be judged on its own clicks
-            run.clicked.length = 0;
-            log('the page replaced the gate — running the sequence again');
-            dbg('the page put the gate back — running the sequence again (restart ' + run.restarts + ')');
+        if (r.done) {
+            if (r.restarts >= MAX_RESTARTS) return;
+            const first = resolveStep(r.seq.steps[0]);
+            if (!first) { r.vanished = true; return; }
+            if (!r.vanished && r.clicked.indexOf(first) !== -1) return;
+            r.restarts++;
+            r.vanished = false;
+            r.idx = 0;
+            r.done = false;
+            r.noop = false;   // a fresh run gets to be judged on its own clicks
+            r.clicked.length = 0;
+            log('the page replaced “' + r.name + '” — running the sequence again');
+            dbg(r.tag + 'the page put the gate back — running the sequence again (restart ' + r.restarts + ')');
         }
 
-        const step = run.seq.steps[run.idx];
+        const step = r.seq.steps[r.idx];
         const el = resolveStep(step);
-        if (!el || run.clicked.indexOf(el) !== -1) return;
+        if (!el || r.clicked.indexOf(el) !== -1) return;
 
-        beginClick(el, now);
+        beginClick(r, el, now);
     }
 
     // A MutationObserver alone misses a gate that is already in the DOM before we start
@@ -798,28 +829,44 @@
             return;
         }
 
-        // v0.10.0 runs only the first sequence, exactly as v0.9.0 ran the only one there
-        // was. Arming all of them is the next commit; keeping the shape change inert means
-        // a fixture that breaks here can only be the reshape.
-        const seq = seqs[0];
-        const watchMs = (seq.watchMs > 0) ? seq.watchMs : watchDefault();
-        run = {
-            seq, name: seqName(seq, 0), key: hit.key,
-            idx: 0, done: false, clicked: [], restarts: 0, vanished: false,
-            deadline: Date.now() + watchMs, settleUntil: 0, obs: null, timer: null,
-            // verify: the click currently being judged. noop: at least one step was
-            // clicked to exhaustion without the page reacting, which changes what the
-            // completion line is allowed to claim.
-            verify: null, noop: false
-        };
-        dbg('armed for ' + hit.key + ' — “' + run.name + '” (' + seq.steps.length +
-            (seq.steps.length === 1 ? ' step' : ' steps') + '), watching ' +
-            Math.round(watchMs / 1000) + 's — fired ' + (seq.fires || 0) + ' time(s) before' +
-            (seqs.length > 1 ? ' [' + (seqs.length - 1) + ' more sequence(s) not yet armed]' : ''));
-        run.timer = setInterval(tick, 200);
+        // EVERY sequence arms. Which one actually fires is decided by the page: a run
+        // whose step 1 never resolves simply reports NEVER MATCHED and retires, which is
+        // the expected outcome for all but one of them on any given page. That is what
+        // lets a host hold an age gate from its landing page and an unrelated popup from
+        // three pages in, without either knowing about the other.
+        const now = Date.now();
+        runs = seqs.map((seq, i) => {
+            const watchMs = (seq.watchMs > 0) ? seq.watchMs : watchDefault();
+            const name = seqName(seq, i);
+            return {
+                seq, name, key: hit.key,
+                // Trace lines are prefixed only when there is something to disambiguate,
+                // so a single-sequence host's trace stays exactly as it read before.
+                tag: seqs.length > 1 ? '[' + name + '] ' : '',
+                idx: 0, done: false, clicked: [], restarts: 0, vanished: false,
+                deadline: now + watchMs, settleUntil: 0,
+                // verify: the click currently being judged. noop: at least one step was
+                // clicked to exhaustion without the page reacting, which changes what the
+                // completion line is allowed to claim.
+                verify: null, noop: false
+            };
+        });
+
+        if (seqs.length === 1) {
+            const r = runs[0];
+            dbg('armed for ' + hit.key + ' — “' + r.name + '” (' + r.seq.steps.length +
+                (r.seq.steps.length === 1 ? ' step' : ' steps') + '), watching ' +
+                Math.round((r.deadline - now) / 1000) + 's — fired ' + (r.seq.fires || 0) + ' time(s) before');
+        } else {
+            dbg('armed for ' + hit.key + ' — ' + seqs.length + ' sequences, each hunting its own step 1: ' +
+                runs.map(r => '“' + r.name + '” (' + r.seq.steps.length + ', ' +
+                    Math.round((r.deadline - now) / 1000) + 's, fired ' + (r.seq.fires || 0) + '×)').join(', '));
+        }
+
+        watcher = { timer: setInterval(tick, 200), obs: null };
         try {
-            run.obs = new MutationObserver(tick);
-            run.obs.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style', 'hidden', 'aria-hidden'] });
+            watcher.obs = new MutationObserver(tick);
+            watcher.obs.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style', 'hidden', 'aria-hidden'] });
         } catch (_) {}
         tick();
     }
@@ -831,16 +878,29 @@
     // that is itself still downloading cannot appear until well after parsing began.
     //
     // Without this, a site whose gate arrived at ~12s was never touched on a normal visit,
-    // while opening Settings or toggling debug made it fire instantly — those call
-    // arm(true), which opened a fresh window with the gate already on screen. The rule was
-    // fine; it was being asked to watch during the wrong ten seconds.
+    // while opening Settings made it fire instantly — that calls arm(true), which opened a
+    // fresh window with the gate already on screen. The rule was fine; it was being asked
+    // to watch during the wrong ten seconds.
+    //
+    // Renews EVERY live run, each against its own watchMs. A sequence that has already
+    // completed is skipped, so reaching `load` cannot reopen a window on a gate that was
+    // dealt with — but its siblings, which may still be waiting for a popup that has not
+    // appeared, get the full extension.
     function extendWatch(why) {
-        if (!run || run.done) return;
-        const ms = (run.seq.watchMs > 0) ? run.seq.watchMs : watchDefault();
-        const until = Date.now() + ms;
-        if (until <= run.deadline) return;
-        run.deadline = until;
-        dbg('page reached ' + why + ' — watching ' + Math.round(ms / 1000) + 's more from here');
+        const now = Date.now();
+        let extended = 0, longest = 0;
+        for (const r of runs) {
+            if (r.done) continue;
+            const ms = (r.seq.watchMs > 0) ? r.seq.watchMs : watchDefault();
+            const until = now + ms;
+            if (until <= r.deadline) continue;
+            r.deadline = until;
+            extended++;
+            longest = Math.max(longest, ms);
+        }
+        if (!extended) return;
+        dbg('page reached ' + why + ' — watching ' + Math.round(longest / 1000) + 's more from here' +
+            (runs.length > 1 ? ' (' + extended + ' of ' + runs.length + ' sequences)' : ''));
     }
 
     // ---------------- SPA navigation ----------------
@@ -1336,23 +1396,28 @@
         const host = teachState.subdomains ? teachState.host.replace(/^www\./, '') : teachState.host;
         const rules = getRules();
         const prev = rules[host];
+        // APPENDS. Teaching a popup found three pages into a site must not wipe the age
+        // gate taught on its landing page — that is the whole reason `clicks` is a list.
+        // Deleting a sequence is Settings' job, and it is per-sequence there.
+        const seq = newSeq(teachState.steps);
+        const kept = seqsOf(prev);
         rules[host] = {
             v: SCHEMA_V,
             host,
             subdomains: !!teachState.subdomains,
-            enabled: true,
-            // v0.10.0 still replaces, exactly as v0.9.0 did. Appending — so a popup taught
-            // three pages into a site does not wipe the landing page's gate — is the next
-            // commit, along with the runner that can actually arm more than one.
-            clicks: [newSeq(teachState.steps)],
+            enabled: prev ? prev.enabled !== false : true,
+            clicks: kept.concat([seq]),
             prefs: (prev && prev.prefs) || null
         };
         saveRules(rules);
-        log('rule saved for ' + host + ' (' + teachState.steps.length +
-            (teachState.steps.length === 1 ? ' click)' : ' clicks)'));
         const n = teachState.steps.length;
+        const total = rules[host].clicks.length;
+        log('“' + seqName(seq, total - 1) + '” saved for ' + host + ' (' + n +
+            (n === 1 ? ' click' : ' clicks') + '; ' + total +
+            (total === 1 ? ' sequence for this host)' : ' sequences for this host)'));
         endTeaching();
-        toast('Forget Me Not: saved ' + n + (n === 1 ? ' click' : ' clicks') + ' for ' + host + '.');
+        toast('Forget Me Not: saved ' + n + (n === 1 ? ' click' : ' clicks') + ' for ' + host +
+              (total > 1 ? ' — ' + total + ' sequences now taught here.' : '.'));
     }
 
     // ---------------- Toast ----------------

@@ -98,9 +98,22 @@ re-verified afterwards (see below). The trace and the `performClick` split were 
 in `CLAUDE.md`, including the trap that the "Cleanup owed" list it was executed from had gone
 stale and, followed literally, would have deleted the trace's only source of content.
 
-**M1 — Schema v2, new key names, NO migration.** `fmn_rules` holds
-`{v:2, clicks:{steps,…}, prefs:{…}}`; see `docs/PREFS.md` for the shape. The `gs_*` keys become
-`fmn_*` in the same pass, and the old ones are deleted once on first run.
+**M1 — Schema v2, new key names, NO migration. ✅ DONE 2026-08-17.** Shipped as two commits so
+a regression would have one candidate cause: **v0.10.0** reshaped storage while the runner
+still used `clicks[0]` (inert — all five fixtures unchanged), **v0.11.0** made the runner arm
+every sequence and teaching append.
+
+`fmn_rules` holds `{v:2, host, subdomains, enabled, clicks:[Seq], prefs:{…}}`. **`clicks` is an
+array**, not the single object originally drafted in `docs/PREFS.md` — the user needs a second,
+unrelated popup taught several pages into a site without wiping the landing page's gate, and
+extra *steps* cannot express that (a sequence blocks on step N before hunting N+1, so the deep
+popup would fire on neither page). Each sequence arms independently and self-selects by whether
+its step 1 resolves; there is no URL matching. Full reasoning in `CLAUDE.md`.
+
+Verified: two sequences running in parallel on one page with independent retry ladders; a
+sequence whose control is absent reporting `NEVER MATCHED` and retiring without interfering;
+teaching a third appending while the first two keep their counters; cross-frame; and the
+`<path>` → `<div.x>` candidate walk. The `gs_*` keys are deleted once on first run.
 
 **There is deliberately no v1→v2 migration, and no back-compat read path.** An earlier draft of
 this plan (and of `docs/PREFS.md`) said to keep one "for a long time; rules are hand-taught and
@@ -130,6 +143,27 @@ Fixtures-first wins; PREFS has been corrected.
 
 **M5 — Wikipedia, anonymous, in a fresh container.** Sidebar closed and dark theme from first
 paint, with nothing transmitted.
+
+## Losing the user's saved rules costs NOTHING. Stop factoring it in.
+
+Stated by the user 2026-08-17, after this kept resurfacing: *"wiping all my saved rules is of
+zero importance to me. I expect that by the time we are done with this project I will have done
+it 30-50 times, and it only takes a few seconds for each one. You need to stop taking it into
+consideration at all."*
+
+This is not "migrations are optional". It is stronger: **rule loss is not a cost, so it may
+never appear in any argument.** Concretely, none of the following are valid reasoning here:
+
+- "Get the schema right now, because reshaping it later means re-teaching." — No. Reshape
+  whenever it is convenient. There is no last chance and no schema debt.
+- "Fold this into M1 while the shape is open." — No. Sequence work by what is clearest to
+  build and easiest to attribute a regression to, and by nothing else.
+- "Add a compatibility read path / keep the old key as a fallback / write a migration." — No.
+  Delete and move on.
+
+The only remaining reason to split work across milestones is **regression attribution** — a
+commit that changes one thing tells you what broke. That reason stands on its own and does not
+need storage to justify it.
 
 ## Decisions already made — do not re-open
 

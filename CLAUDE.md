@@ -34,6 +34,48 @@ the sequence, since "is this one still working?" is the only question they answe
 Settings importer, which rejects a v1 export rather than converting it. See HANDOFF.md —
 rule loss is explicitly not a cost on this project and must not appear in a design argument.
 
+## Several sequences per host, all armed at once (v0.11.0, 2026-08-17)
+
+The requirement, from the user: a site has a gate on its landing page, and *a different*
+popup several pages deeper. Teaching the second must not wipe the first, and both need to
+work. Two things fall out, and only the first is obvious.
+
+**Teaching APPENDS** (`saveTaught` concatenates onto `seqsOf(prev)`). Deleting is Settings'
+job and is per-sequence there — each block has its own Test and ✕, and removing the last
+sequence only deletes the host entry if it has no `prefs` either.
+
+**Every sequence arms simultaneously, and the page decides which one runs.** `runs` is a
+list of independent run objects — separate `idx`, `deadline`, `verify`, `clicked`,
+`restarts` — sharing one interval and one MutationObserver, because those are properties of
+the document and N copies would be N× the wake-ups for nothing. `tick()` iterates; `retire()`
+drops one run and stops the shared watcher only when the last one goes.
+
+- **Folding a second gate in as extra STEPS cannot work, and this is the thing to understand
+  before touching the shape.** A sequence is ordered and blocks: step N+1 is not hunted until
+  step N commits. So a deep-page popup appended as "step 3" never fires on the landing page
+  (steps 1–2 completed, step 3 isn't there, window closes), and on the deep page it never
+  fires either, because steps 1–2 don't resolve so step 3 is never reached. They are not one
+  sequence; they are two, and the data model has to say so.
+- **No URL matching, deliberately.** A sequence self-selects by whether its step 1 resolves,
+  which is information the page hands you for free and which survives the site reorganising
+  its paths. A `urlPattern` field would be a second thing to teach, a second thing to get
+  wrong, and a second thing to re-teach after a redesign.
+- **`NEVER MATCHED` is the normal, expected outcome for all but one sequence on any page.**
+  It is not an error and must not be read as one — with 3 sequences taught, a clean visit
+  produces 2 of those lines. Trace lines are prefixed `[sequence name]` **only when more than
+  one is armed**, so a single-sequence host's trace stays byte-identical to v0.10.0's and old
+  comparisons still hold.
+- **Counters are per sequence**, located by `id` and not by index, because Settings can
+  delete a sequence while a run still holds a reference to it. "Is *this* one still working?"
+  is the only question `fires`/`lastFired` answer, and a host-level counter cannot.
+- `extendWatch` renews every run that is not `done`, each against its own `watchMs`. A
+  completed sequence is skipped so reaching `load` cannot reopen a window on a gate already
+  dealt with, while its siblings still waiting on a slow popup get the full extension.
+- Known and accepted: two sequences whose step 1 resolves to the **same** element will both
+  click it, since `clicked` is per-run. Don't teach that; no guard built.
+- `seqName()` unwraps `describe()`'s `button — “Enter site”` label to just the caption,
+  because the log quotes it again and `“button — “Enter site”” saved` is unreadable.
+
 ## Why the project exists (settled 2026-08-17 — read before designing anything)
 
 The user browses with a container extension that gives every tab a fresh container and
