@@ -30,8 +30,10 @@ runner is the *fallback*, for state that has no stored representation.
 ### The replay ladder — take the highest rung that works
 
 1. **Effect** — write the DOM state directly (a class on `<html>`, a `data-theme` attribute).
-   Nothing leaves the browser. Covers most theme / layout / panel preferences, because those
+   Nothing is *transmitted*. Covers most theme / layout / panel preferences, because those
    are nearly always "a class near the top of the document, and CSS does the rest".
+   Not the same as unobservable: the page's JS can read a class we set exactly as easily as
+   one it set itself. Rung 1 buys zero transmission, not zero visibility.
 2. **Local storage** — write the key/value the site would have written, at document-start,
    for its own script to read.
 3. ~~**Cookie**~~ — **deliberately does not exist. Do not add it.** See below.
@@ -42,10 +44,13 @@ runner is the *fallback*, for state that has no stored representation.
 - **It would not work here anyway.** Cookies are blocked at the browser level for these
   sites, so `document.cookie = '…'` silently no-ops and reads back empty — a feature that
   fails indistinguishably from "the site ignored our value", on the only machine it runs on.
-- **Ephemerality would not save us.** Container deletion protects you only while nothing
-  re-creates the value. Replay re-creates it, same bytes, every visit, out of GM storage the
-  container cannot reach. That is the definition of a supercookie; rung 3 would defeat the
-  deletion, not be limited by it.
+- **Ephemerality would not save us — but only for blob replay.** Container deletion protects
+  you only while nothing re-creates the value, and replay re-creates it every visit out of GM
+  storage the container cannot reach. That is a supercookie *if the value carries an
+  identifier*. It is **not** one for a low-entropy flag like `-clientpref-0`, which millions
+  of readers share and which distinguishes nobody — an earlier version of this note argued
+  otherwise and was wrong. The hazard is wholesale replay of a captured blob whose contents
+  you have not looked at, which is precisely why capture is snapshot-and-review.
 - **An invariant beats a heuristic.** "GateSkip never writes a cookie; nothing it does is
   transmitted to the host" is one sentence, checkable by grepping for `document.cookie`.
   The alternative — "we transmit only what our entropy classifier judged safe" — is a thing
@@ -64,6 +69,14 @@ read by the site's own script and posted home, re-establishes tracking exactly a
 cookie would.
 
 > **The medium decides the blast radius. The value decides whether there is anything to leak.**
+
+And one that applies at every rung equally: **replay the smallest set of values that works.**
+A fresh container arriving with preferences already set is itself mildly distinctive, since
+most cookieless visitors have none — true at rung 1 as much as rung 3, so it is not a reason
+to prefer a rung, but it is a reason to keep the entry list minimal and to make unticking
+easy.
+
+Full design: [`docs/PREFS.md`](docs/PREFS.md).
 
 So rungs 1 and 2 keep the classifier: capture is **snapshot-and-review**, never automatic —
 the user sets a site up how they like it, hits "Remember this site", and gets a list where
