@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        Forget Me Not
 // @namespace   https://github.com/VitaKaninen
-// @version     0.13.0
+// @version     0.14.0
 // @author      VitaKaninen
 // @description Teach it, once, which clicks dismiss a site's age gate, cookie wall or unwanted panel — then it remembers, and does that for you on every later visit. Nothing is guessed and nothing fires until you have taught it.
 // @match       *://*/*
@@ -85,7 +85,7 @@
     const TRACE_MAX = 600;            // trace lines kept; a few page loads' worth
     // Bump with @version. A trace file that does not say which build produced it is worth
     // much less when it arrives days later.
-    const VERSION = '0.13.0';
+    const VERSION = '0.14.0';
 
     // Rule shape:
     //   { host, subdomains, enabled, watchMs, steps: [Step], created, lastFired, fires }
@@ -2006,6 +2006,11 @@
     // settings UI, the host-keyed storage and the trace, and nothing else — which is why
     // this section registers its own load listeners rather than joining boot().
     const REASSERT_AT = 1000;         // ms after load, the last re-application
+    // Bounded so a site that rewrites the root element in response to every change cannot
+    // turn this into a ping-pong. Five is plenty for a start-up that assigns className
+    // once or twice; a site that needs more than five is one to find out about, not to
+    // out-stubborn.
+    const EARLY_FIXES = 5;
 
     function prefsHere() {
         if (!isOn()) return null;     // off means BOTH halves off. One switch.
@@ -2162,9 +2167,47 @@
     // finishes"), and everything after it is covered by this: observe, never re-apply,
     // report the first loss and stop. Re-applying here would be the hazard re-assertion is
     // already bounded to avoid — an endless fight with the site, and with the user.
-    function watchForLosses(dom) {
+    // Which attributes any of these entries can possibly be affected by.
+    function attrNamesOf(dom) {
         const names = ['class'];
         for (const e of dom) if (e.kind === 'attr' && names.indexOf(e.name) === -1) names.push(e.name);
+        return names;
+    }
+
+    // The scheduled passes are DOMContentLoaded / load / load+1s, and on Wikipedia that is
+    // not soon enough. Measured 2026-08-17 on its own served markup: we write the theme
+    // class at +1ms, MediaWiki's `client-nojs` → `client-js` script ASSIGNS THE WHOLE
+    // className from a string it captured earlier at +2ms — restoring the light theme — and
+    // the DOMContentLoaded pass does not put it back until +54ms. On a real page load
+    // DOMContentLoaded is far later than that and first paint can easily land inside the
+    // gap, which is a visible flash of the theme the user rejected.
+    //
+    // So drift during start-up is repaired on the mutation that causes it, not on a timer.
+    // It hands over to the scheduled passes at DOMContentLoaded and is bounded by
+    // EARLY_FIXES. Note this is a REPAIRING observer, unlike watchForLosses below, and the
+    // difference is deliberate: before the user has touched anything, putting a preference
+    // back is what we are for; after re-assertion has finished, only reporting is.
+    function watchEarlyDrift(entries) {
+        const dom = entries.filter(e => e.kind === 'class' || e.kind === 'attr');
+        if (!dom.length) return;
+        let obs = null, fixes = 0;
+        const stop = () => { try { obs.disconnect(); } catch (_) {} obs = null; };
+        try {
+            obs = new MutationObserver(() => {
+                if (!obs) return;
+                if (touched || fixes >= EARLY_FIXES) { stop(); return; }
+                if (!dom.some(e => replayed.has(entryId(e)) && domHolds(e) === false)) return;
+                fixes++;
+                replayPass('start-up', entries);
+            });
+            obs.observe(document.documentElement,
+                { attributes: true, subtree: true, attributeFilter: attrNamesOf(dom) });
+        } catch (_) { return; }
+        document.addEventListener('DOMContentLoaded', () => { if (obs) stop(); }, { once: true });
+    }
+
+    function watchForLosses(dom) {
+        const names = attrNamesOf(dom);
         let obs = null;
         const stop = () => { try { obs.disconnect(); } catch (_) {} obs = null; };
         try {
@@ -2191,6 +2234,7 @@
 
         const later = (why) => replayPass(why, p.entries);
         if (document.readyState === 'loading') {
+            watchEarlyDrift(p.entries);     // only meaningful while the page is still parsing
             document.addEventListener('DOMContentLoaded', () => later('DOM ready'), { once: true });
         } else {
             later('DOM ready');

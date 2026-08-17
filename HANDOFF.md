@@ -24,9 +24,9 @@ re-litigation, unless it says otherwise.
   reinvent them.
 - **The design for the new subsystem is written**: `docs/PREFS.md`. It is complete enough to
   build from.
-- **v0.13.0 is the current script, and the preference half is feature-complete.** M2 added the
-  four fixtures, M3 the capture half, M4 replay. Next up is **M5** — Wikipedia in a fresh
-  container, the first run against a site with no fixture behind it.
+- **v0.14.0 is the current script. M0–M5 are all done and the plan below is complete.** M2 added
+  the four fixtures, M3 the capture half, M4 replay, M5 Wikipedia. What remains is the part that
+  needs your browser rather than this one — the checklist at the end of M5.
 
 ## Step 0 — the rename. ✅ DONE 2026-08-17.
 
@@ -200,14 +200,40 @@ Not verified live, and stated as such in `CLAUDE.md`: **re-assertion's own `touc
 distinct from the watcher's. It needs a trusted interaction inside the first second of a page
 load, which the test tooling cannot deliver. Inspected only.
 
-**M5 — Wikipedia, anonymous, in a fresh container.** All the machinery now exists; this is the
-first run against a site nobody wrote a fixture for. `docs/PREFS.md` has the measurement already
-taken: the six `clientpref` classes on `:root`, all low-entropy and enumerable, with rung 1 alone
-sufficient for the theme and the TOC pin, and localStorage untouched and empty throughout.
-Expect the capture to offer those classes pre-ticked. Watch for two things — whether MediaWiki's
-start-up rewrites `:root`'s class list (which would show up as re-assert lines, and would make
-the audit's re-assert count the thing to read), and whether the served class list differs
-between logged-out visits.
+**M5 — Wikipedia, anonymous. ✅ DONE 2026-08-17, v0.14.0.** Measured live on
+`en.wikipedia.org/wiki/Cat`, then run end to end against Wikipedia's own served markup with its
+own modules and CSS loading. Capture offered **exactly two entries, both pre-ticked**
+(`+skin-theme-clientpref-night`, `−skin-theme-clientpref-day`); replay produced
+`bg: rgb(32,33,34)` with **no cookie written by us and localStorage untouched**. Full write-up
+in `CLAUDE.md` under "Wikipedia, and the measurement that was wrong".
+
+One finding worth carrying everywhere, because the method failed before the code did:
+
+> **A before/after comparison cannot detect a change that was undone.** Comparing Wikipedia's
+> served `<html class>` against its settled one showed one difference (`client-nojs` →
+> `client-js`) and I reported that MediaWiki does not rewrite the root class list. It does — it
+> assigns the whole `className` from a string captured earlier, restoring the light theme a
+> millisecond after our write. A set difference cannot see that, by construction. Whenever the
+> question is "does this site fight us?", the instrument has to be an observer.
+
+That cost 52ms in the rejected theme, which on a real network load is enough for first paint —
+so `watchEarlyDrift` now repairs drift on the mutation that causes it, bounded by `EARLY_FIXES`
+and handing over at DOMContentLoaded. Re-measured `longestWrongThemeMs: 0`.
+
+**What is left, and only you can do it.** The Browser pane cannot install a userscript, so the
+end-to-end run used Wikipedia's markup served from localhost. Real network timing and the
+container extension are untested. In your own browser:
+
+1. Confirm the old **GateSkip** script is uninstalled from Violentmonkey — still outstanding from
+   the rename, and two copies both matching `*://*/*` is the click-collision hazard in
+   `../CLAUDE.md`.
+2. Install/update to v0.14.0, open `en.wikipedia.org` in a fresh container, set the theme to dark
+   in the Appearance panel, and pick **Forget Me Not: remember this site**. Expect two entries,
+   both ticked.
+3. Open Wikipedia in *another* fresh container. It should come up dark with no flash.
+4. If there is a flash, **Save trace** and look for `re-asserted at start-up` — that line and its
+   `+NNNNms` say whether early repair fired and how late. If it says `re-asserted at DOM ready`
+   instead, `watchEarlyDrift` did not catch it and the fix is there, not in the timings.
 
 **M5 — Wikipedia, anonymous, in a fresh container.** Sidebar closed and dark theme from first
 paint, with nothing transmitted.

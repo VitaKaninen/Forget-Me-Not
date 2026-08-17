@@ -315,6 +315,91 @@ master switch off killing both halves; both halves on one host; and the click ha
 needs a trusted interaction inside the first second of a page load and the test tooling cannot
 deliver one that fast. Inspected, not measured — say so rather than implying otherwise.
 
+## Wikipedia, and the measurement that was wrong (v0.14.0, 2026-08-17)
+
+M5. Measured against `en.wikipedia.org/wiki/Cat`, anonymous, and then run end to end against
+Wikipedia's own served markup and its own JavaScript.
+
+**What Wikipedia actually does when you change the theme**, measured through
+`mw.user.clientPrefs.set` (the same call the Appearance radios make):
+
+| | |
+|---|---|
+| `:root` classes | `+skin-theme-clientpref-night`, `−skin-theme-clientpref-day` (and the same shape for `toc-pinned`, `limited-width`) |
+| localStorage | **unchanged** — only `MediaWikiModuleStore:enwiki`, identical before and after |
+| sessionStorage | empty throughout |
+| what it persists | one cookie: `enwikimwclientpreferences=skin-theme-clientpref-night,…` |
+| `body` background | `rgb(248,249,250)` → `rgb(32,33,34)` |
+
+So rung 1 is the whole answer here, rung 2 is not needed, and the only thing the site keeps is
+the cookie the user's container destroys — which is the entire reason this project exists.
+Capture offered **exactly two entries, both pre-ticked**, and nothing else.
+
+### The wrong measurement, and why it was wrong
+
+Comparing the served `<html class>` (fetched raw) against the settled one showed a single
+difference: `client-nojs` → `client-js`. From that I concluded MediaWiki does not rewrite the
+root class list. **That conclusion was wrong, and the method could never have found it out.**
+
+What MediaWiki actually does is **assign the whole `className` string** — from a value it
+captured earlier — so it restores `skin-theme-clientpref-day` and drops whatever else was put
+there. A set difference between "before" and "after" cannot see a wholesale rewrite that
+restores the same values; it is invisible by construction. Only a MutationObserver sees it, and
+that is exactly what `tests/pref-probe.js` is for.
+
+> **A before/after comparison cannot detect a change that was undone.** Whenever the question is
+> "does this site fight us?", the instrument has to be an observer, not a diff.
+
+This is the same shape as the v0.6.0 mistake — reading a snapshot as though it described what
+happened in between — and it survived a whole round of confident reporting before the timeline
+caught it.
+
+### What it cost, and the fix
+
+Timeline on the first end-to-end run: we write the theme class at **+1ms**, MediaWiki reassigns
+`className` at **+2ms** (light again), and the DOMContentLoaded pass repairs it at **+54ms**.
+Fifty-two milliseconds in the theme the user rejected — and on a real network load
+DOMContentLoaded is far later than 54ms, so first paint can easily land inside that gap. M5's
+acceptance criterion is *"dark theme from first paint"*, and the scheduled passes alone do not
+meet it.
+
+`watchEarlyDrift` repairs drift **on the mutation that causes it** rather than on a timer, hands
+over to the scheduled passes at DOMContentLoaded, and is bounded by `EARLY_FIXES` (5) so a site
+that rewrites on every change cannot ping-pong. Re-measured: repaired in the same millisecond,
+**`longestWrongThemeMs: 0`**.
+
+- **It repairs; `watchForLosses` only reports.** The difference is deliberate and is the whole
+  boundary of this feature: before the user has touched anything, putting a preference back is
+  what we are for. After re-assertion has finished, only reporting is — a repairing observer
+  there would be an endless fight with the site, and with the user.
+- The audit's "only because" clause earned its keep on its first real site: Wikipedia reports
+  `all 2 page preference(s) hold as re-assertion finishes (2 of them only because they were put
+  back after the site overwrote them)`. Without that clause the trace would read as though
+  document-start replay had been sufficient, which is false.
+
+### Also confirmed on the real site
+
+- **The Appearance radios are not in the served HTML and never appeared in a hidden tab** —
+  `skins.vector.clientPreferences` sat in state `executing` indefinitely. This is the same
+  late-binding module that beat the click runner's retry ladder in v0.5.0, and it is the
+  concrete argument for prefs over clicks here: **rung 1 does not care whether the control ever
+  appears.**
+- `MediaWikiModuleStore:enwiki` is ~447 KB. If it changes after the baseline freezes it is
+  dropped by the `PREF_MAX_VALUE` cap and counted in the panel footer — the size cap validated
+  on a real site the first time out.
+
+### How this was run, and what it does not prove
+
+The Browser pane cannot install a userscript, so `en.wikipedia.org` was measured live, and the
+end-to-end run used Wikipedia's own downloaded markup served from `localhost:8731` with a
+`<base href="https://en.wikipedia.org/">` and our scripts injected at the top of `<head>` — so
+MediaWiki's real modules, CSS and start-up code all ran, against a real document-start replay.
+The snapshot was recycled afterwards; it is not in the repo.
+
+**What that does not prove:** real network timing (first paint against a cold cache), and the
+user's actual container extension. Those need the script installed in their browser — see
+`HANDOFF.md` for the short checklist.
+
 ## Decisions that are not obvious from the code
 
 **Rules are keyed on the hostname of the document the gate is in — not the top page's.**

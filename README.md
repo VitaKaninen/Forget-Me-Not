@@ -56,8 +56,9 @@ Nothing is ever sent to the site, and **Forget Me Not never writes a cookie**. T
 kept locally and written back into your own browser before the page loads — storage entries
 before any of the site's own scripts run, so it reads them as though they had always been there.
 
-Some sites overwrite the page's own state while they start up, so anything set on the page is
-re-applied at a few points during loading, and then left alone the moment you touch the page.
+Some sites overwrite the page's own state while they start up — Wikipedia does, about a
+millisecond after we set it — so anything set on the page is put straight back for as long as
+the page is still loading, and then left alone the moment you touch it.
 If a site takes a preference back anyway, that goes in **Recent activity** rather than being
 quietly swallowed. A stored value is never written over one that is already there: if your
 browser still has the site's own value, that is the one that wins.

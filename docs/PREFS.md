@@ -217,6 +217,12 @@ re-clicking a toggle that stayed on screen. **Trusted events only** — the clic
 dispatches its own pointer events, and without that guard a host with both halves taught froze
 its baseline at ~7ms and lost re-assertion entirely.
 
+**The scheduled points are not soon enough on their own** (learned on Wikipedia, v0.14.0). It
+reassigns the whole root `className` about a millisecond after our document-start write, and the
+DOMContentLoaded pass is ~50ms behind that — long enough for first paint to land in the wrong
+theme. So drift during start-up is repaired **on the mutation that causes it**, bounded by a fix
+cap and handing over to the scheduled passes at DOMContentLoaded.
+
 Immediately after the last re-application, one line states what actually held — **including how
 many held only because they were put back**, since "it holds" and "it holds because we kept
 fighting for it" are different results. Everything after that moment is covered by a read-only
@@ -272,7 +278,10 @@ shape or any pref code to exist first.
 2. **The four fixtures**, before any pref code is written. ✅ 2026-08-17.
 3. Baseline + capture + review panel. ✅ v0.12.0.
 4. Replay + re-assertion + trace lines. ✅ v0.13.0.
-5. Wikipedia.
+5. Wikipedia. ✅ v0.14.0 — measured live and run end to end against its own markup and modules.
+   Rung 1 alone, two entries, both pre-ticked, nothing transmitted. It reassigns `className`
+   during start-up, so early drift repair was needed to hit "from first paint"; the note in
+   `../CLAUDE.md` also records the measurement that got this wrong first time.
 
 ## Open, deliberately deferred
 
