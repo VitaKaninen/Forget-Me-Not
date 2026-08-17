@@ -79,17 +79,27 @@ Turning it off mid-countdown cancels the pending click; the next tick clicks nor
 
 - **Watching is bounded.** Ten seconds per navigation, then it stops. On a single-page app
   the window restarts when the URL changes.
-- **A gate that comes back is clicked again.** Sites that render the gate server-side and
-  then hydrate it will have their markup clicked before the handler exists; GateSkip
-  notices the gate reappear and re-runs the sequence, up to twice.
+- **Every click is checked, and retried if the page ignored it.** A control can be on
+  screen, look completely normal and do nothing, because the site attached its handler
+  seconds after sending the markup. GateSkip watches for the page actually reacting —
+  the element vanishing, a checkbox flipping, a class or a size changing anywhere up its
+  ancestor chain — and clicks again, up to four times, if nothing moved.
+- **It says so when a click achieved nothing.** Four attempts with no reaction is logged
+  as exactly that, rather than as a dismissal. "GateSkip did nothing" and "GateSkip did
+  something that had no effect" are different problems and now read differently.
+- **A gate that comes back is clicked again**, up to twice, for sites that tear the gate
+  down and re-render it.
 - **A gate that never goes away is left alone.** Re-clicking there would untick the
   checkbox the first click ticked, so it stops instead.
+- **It clicks the button, not the icon inside it.** A click taught on an `<svg>` is sent
+  to the surrounding control, since that is usually what the site listens on.
 
 ## Tests
 
-`tests/` holds three fixtures — a plain gate, a two-step gate behind a shadow root, and a
-gate inside an embedded frame — plus a `GM_*` shim so the script can be loaded by a plain
-page. Serve the folder and open them:
+`tests/` holds four fixtures — a plain gate, a two-step gate behind a shadow root, a gate
+inside an embedded frame, and one whose controls sit inert for two seconds before their
+handlers arrive — plus a `GM_*` shim so the script can be loaded by a plain page. Serve the
+folder and open them:
 
 ```bash
 python -m http.server 8731
@@ -100,5 +110,8 @@ Then visit `http://localhost:8731/tests/fixture-simple.html` and use the browser
 
 ## Install
 
-Not on an update channel yet — install the raw `.user.js` by hand. See the note at the top
-of the file for adding `@downloadURL` / `@updateURL` later.
+The header points `@updateURL` / `@downloadURL` at
+`raw.githubusercontent.com/VitaKaninen/GateSkip/main/GateSkip.user.js`, matching the other
+scripts in Monkey Scripts. That only resolves once this folder is pushed to that repo with
+`main` as its default branch; until then Violentmonkey's update check just 404s and keeps
+the installed copy, so installs are still by hand.

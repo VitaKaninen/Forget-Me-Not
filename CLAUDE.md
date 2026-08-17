@@ -71,6 +71,52 @@ whatever now sits there".
   would otherwise answer "not found", and the first of those wins the race against the one
   frame that has it. Absence of a positive within 800ms is the negative.
 
+## A click is not an outcome (v0.3.0, 2026-08-16)
+
+The bug that forced this: **"clicked it" and "clicked it and something happened" were the
+same thing here, and they are not.** Markup is routinely served with its handler attached
+seconds later — the control is present, visible and completely inert in the meantime — and
+every click into that dead window was counted as a dismissal. The log said *"dismissed the
+gate (2 clicks)"* over a gate that was still on screen. Reproduced and pinned down with
+`tests/fixture-late.html` (wires its handlers at 2000ms); v0.2.0 fails it exactly that way.
+
+This is also why debug mode "fixed" it: `DEBUG_DELAY` put 5 seconds in front of every click,
+which is long enough for anything to hydrate. **Debug mode changing the outcome is itself
+the diagnosis** — the only thing it varies is time.
+
+So every click now goes fire → wait → check (`fireClick` / `commitClick`, and the
+`run.verify` block in `tick`), retried up to `CLICK_TRIES` with `RETRY_WAIT` backoff, and a
+step counts as done only once the page demonstrably moved.
+
+- **What counts as "the page moved" is the hard part, and one level up is not enough.**
+  `clickState` looks at the element (gone / visible / checked / disabled / aria-*) *and*
+  `ancestry()` — class **and size** for 6 levels up. Sizes matter because a section
+  collapsing is often the only consequence there is. First cut compared the element and its
+  immediate parent, which caught Wikipedia's panel toggle (class lands on the parent) and
+  missed `fixture-late.html`'s (grandparent) — and the miss is not harmless: it burned all
+  four attempts on a *toggle*, so the panel ended up clicked back open. **A false negative
+  here is actively destructive, a false positive is merely the old behaviour.** Bias
+  detection toward generous.
+- **Never let a retry loop near a control without a working effect test.** The project rule
+  "never re-click a gate that stayed on screen" is what the verification is for; retries
+  reintroduce that hazard the moment detection goes blind.
+- Exhausting the attempts is **reported, not swallowed** — `run.noop` downgrades the
+  completion line to "ran all N clicks, but at least one of them changed nothing".
+
+**The icon inside the button is not the button.** A step recorded as `path (no text)` is a
+click that landed on an `<svg>` child. Two fixes, because old rules already store the
+`<path>`: `clickableFrom` (teach time) falls back to the nearest ancestor with
+`cursor: pointer` when nothing matches `CLICKABLE` — which is what a `<div>`-with-a-listener
+close button looks like from outside — and `clickTarget` (click time) walks an `INERT_TAG`
+element up to the nearest real control. Attempts 1–2 use that control, attempt 3+ falls back
+to the exact node taught, because there is no way to tell from here which of the two the site
+listens on. Note `el.click()` is `HTMLElement`'s, so on an SVG node it **throws** — the
+`dispatchEvent` fallback in `realClick` is load-bearing, not belt-and-braces.
+
+`realClick` also sends real `clientX/clientY` now. A bare `new MouseEvent('click')` reports
+0,0, and handlers that hit-test or position themselves off the pointer can reasonably ignore
+that.
+
 ### Fixture-writing traps (bit me twice in one session)
 
 Attaching a listener with `document.getElementById(...)` **after** detaching the element's
@@ -90,7 +136,16 @@ tests check) and parks menu commands on `window.__gsMenu`.
 Fixtures: `fixture-simple.html` (plain gate, injected after load, gate markup also in the
 served HTML), `fixture-shadow.html` (two-step gate behind an open shadow root, confirm
 button disabled until the box is ticked), `fixture-iframe.html` + `gate-inner.html` (gate
-only inside an embedded frame).
+only inside an embedded frame), `fixture-late.html` (both controls in the served HTML but
+inert until 2000ms, plus a panel toggle that stays visible and only flips a class on its
+**grandparent** — `window.__verdict()` returns the pass/fail state).
+
+**All fixtures share one host (`localhost`) and rules are keyed by host, so there is exactly
+one rule slot for all of them.** Teaching a second fixture silently overwrites the first, and
+worse, a stale rule from another fixture *fires* on the next one — `fixture-late.html` and
+`fixture-simple.html` both have a "Yes, I am over 18" button, so the stale rule dismissed the
+gate before the teach flow could record it, which reads as a broken recorder. `localStorage.clear()`
+**and reload** between fixtures; clearing without reloading is too late, the rule already armed.
 
 Driving them from the browser console / a CDP `evaluate` is enough — teach via
 `__gsMenu["GateSkip: teach this page"]()`, click the gate, then click **Save** inside

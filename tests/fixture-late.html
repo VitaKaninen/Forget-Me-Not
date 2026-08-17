@@ -1,0 +1,72 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>GateSkip fixture — late-wired gate + a panel toggle that stays put</title>
+<style>
+  body { font: 15px/1.5 system-ui, sans-serif; margin: 40px; }
+  #overlay { position: fixed; inset: 0; background: rgba(0,0,0,.75); display: flex;
+             align-items: center; justify-content: center; }
+  .box { background: #fff; padding: 28px 32px; border-radius: 10px; text-align: center; }
+  .box button { margin: 6px; padding: 8px 18px; font-size: 15px; cursor: pointer; }
+
+  /* The panel toggle deliberately does NOT remove or hide its own button: the only
+     evidence the click worked is a class on the parent. That is what page chrome
+     (Wikipedia's "hide" on its Appearance panel, for one) actually does. */
+  #panel { position: fixed; top: 0; right: 0; width: 240px; background: #eee;
+           border-left: 1px solid #bbb; padding: 10px; }
+  #panel .body { height: 160px; }
+  #panel.collapsed .body { display: none; }
+  #panel button { cursor: pointer; }
+</style>
+
+<script src="gm-shim.js"></script>
+<script src="../GateSkip.user.js"></script>
+
+<h1 id="content">The real page content.</h1>
+<p>Dismissed correctly when the overlay is gone AND #panel has class "collapsed".</p>
+
+<div id="overlay">
+  <div class="box age-gate">
+    <h2>Are you over 18?</h2>
+    <button class="btn btn-enter" id="enter">Yes, I am over 18</button>
+  </div>
+</div>
+
+<div id="panel">
+  <div class="head">
+    Appearance
+    <button id="hide" aria-label="Hide Appearance">hide</button>
+  </div>
+  <div class="body">panel contents</div>
+</div>
+
+<script>
+  // The whole point of this fixture. Both controls are in the SERVED HTML: present,
+  // visible and completely inert until their handlers arrive 2s later. That is the
+  // ordinary shape of a server-rendered page that hydrates, and a single click fired at
+  // document-start lands in the dead window and does nothing at all — while looking, from
+  // the outside, exactly like a click that worked. GateSkip must notice that the page did
+  // not react and try again.
+  const WIRE_AT = 2000;
+  window.__wired = false;
+
+  setTimeout(() => {
+    const ov = document.getElementById('overlay');
+    ov.querySelector('#enter').addEventListener('click', () => ov.remove());
+
+    const panel = document.getElementById('panel');
+    // Toggle, not one-way: clicking twice must leave the panel open again, which is what
+    // makes an unnecessary retry here a visible failure rather than a harmless one.
+    panel.querySelector('#hide')
+         .addEventListener('click', () => panel.classList.toggle('collapsed'));
+
+    window.__wired = true;
+  }, WIRE_AT);
+
+  // What the test reads afterwards.
+  window.__verdict = () => ({
+    wired: window.__wired,
+    gateGone: !document.getElementById('overlay'),
+    panelCollapsed: document.getElementById('panel').classList.contains('collapsed'),
+    log: JSON.parse(localStorage.getItem('GM:gs_log') || '[]').slice(0, 6)
+  });
+</script>

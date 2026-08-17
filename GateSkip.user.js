@@ -1,21 +1,23 @@
 // ==UserScript==
 // @name        GateSkip
 // @namespace   https://github.com/VitaKaninen
-// @version     0.2.0
+// @version     0.3.0
 // @author      VitaKaninen
-// @description Teach it, once, how a site's "are you over 18" gate is dismissed — then it does that for you on every later visit. Nothing is guessed and nothing fires until you have taught it.
+// @description Teach it, once, which clicks dismiss a site's age gate, cookie wall or unwanted panel — then it does that for you on every later visit. Nothing is guessed and nothing fires until you have taught it.
 // @match       *://*/*
 // @grant       GM_setValue
 // @grant       GM_getValue
 // @grant       GM_deleteValue
 // @grant       GM_registerMenuCommand
 // @run-at      document-start
+// @updateURL   https://raw.githubusercontent.com/VitaKaninen/GateSkip/main/GateSkip.user.js
+// @downloadURL https://raw.githubusercontent.com/VitaKaninen/GateSkip/main/GateSkip.user.js
 // ==/UserScript==
 
-// No @downloadURL / @updateURL yet — add the pair once there is a gist or a public repo
-// to serve the file from, and bump @version to make the manager notice. Note they must
-// live INSIDE the metadata block to work, and Violentmonkey rejects a commented-out
-// "// //" line inside it outright, so park drafts down here instead.
+// The @updateURL / @downloadURL pair above only resolves once this folder is pushed to
+// github.com/VitaKaninen/GateSkip with `main` as the default branch — same layout as the
+// other scripts in Monkey Scripts. Until then Violentmonkey's update check 404s, which is
+// harmless (it keeps the installed copy) but means nothing arrives on its own.
 
 (function () {
     'use strict';
@@ -35,6 +37,9 @@
 
     const WATCH_DEFAULT = 10000;      // how long after a load/navigation to keep looking
     const SETTLE_MS = 150;            // pause after a click before hunting the next step
+    const VERIFY_MS = 450;            // grace period before deciding a click did nothing
+    const CLICK_TRIES = 4;            // attempts at one step before writing it off
+    const RETRY_WAIT = [400, 900, 1800];  // gaps before attempts 2, 3 and 4
     const MAX_RESTARTS = 2;           // re-runs allowed when the page replaces the gate
     const LOG_MAX = 120;
     const DEBUG_DELAY = 5000;         // debug mode: how long to show the target first
@@ -147,20 +152,103 @@
     // front of it are for the frameworks that never listen for 'click' at all and act on
     // mousedown; without them those gates simply do not react. `composed: true` matters
     // for anything inside a shadow root, or the event never leaves it.
+    // Real coordinates, not the 0,0 a bare MouseEvent constructor defaults to: a handler
+    // that reads clientX/clientY — menus deciding which way to open, anything doing
+    // hit-testing of its own — sees a click in the corner of the viewport and can
+    // reasonably ignore it.
     function realClick(el) {
-        const opts = { bubbles: true, cancelable: true, composed: true, view: window };
+        let cx = 0, cy = 0;
+        try {
+            const r = el.getBoundingClientRect();
+            cx = Math.round(r.left + r.width / 2);
+            cy = Math.round(r.top + r.height / 2);
+        } catch (_) {}
+        const base = {
+            bubbles: true, cancelable: true, composed: true, view: window,
+            clientX: cx, clientY: cy, screenX: cx, screenY: cy, detail: 1, button: 0
+        };
+        const down = Object.assign({ buttons: 1 }, base);
+        const up = Object.assign({ buttons: 0 }, base);
         try {
             if (typeof PointerEvent === 'function') {
-                el.dispatchEvent(new PointerEvent('pointerdown', opts));
+                el.dispatchEvent(new PointerEvent('pointerdown', Object.assign({ isPrimary: true, pointerType: 'mouse' }, down)));
             }
-            el.dispatchEvent(new MouseEvent('mousedown', opts));
+            el.dispatchEvent(new MouseEvent('mousedown', down));
             if (typeof PointerEvent === 'function') {
-                el.dispatchEvent(new PointerEvent('pointerup', opts));
+                el.dispatchEvent(new PointerEvent('pointerup', Object.assign({ isPrimary: true, pointerType: 'mouse' }, up)));
             }
-            el.dispatchEvent(new MouseEvent('mouseup', opts));
+            el.dispatchEvent(new MouseEvent('mouseup', up));
         } catch (_) {}
+        // `el.click()` is HTMLElement's, so on an SVG node it is simply not there and the
+        // call throws — which is exactly the case the fallback dispatch exists for.
         try { el.click(); }
-        catch (_) { try { el.dispatchEvent(new MouseEvent('click', opts)); } catch (__) {} }
+        catch (_) { try { el.dispatchEvent(new MouseEvent('click', up)); } catch (__) {} }
+    }
+
+    // Elements that are drawn but never listen: the icon inside the button, not the
+    // button. Teaching records what was under the cursor, so an icon-only close control
+    // can easily end up recorded as an <svg> or a <path>. The click still bubbles, so it
+    // often works anyway — but a site that binds its handler to the button and reads
+    // `event.currentTarget` never reacts, and an <svg> has no `.click()` at all.
+    const INERT_TAG = /^(?:svg|path|g|use|circle|rect|line|polygon|polyline|ellipse|img|i)$/i;
+    function clickTarget(el) {
+        if (!el || !el.tagName || !INERT_TAG.test(el.tagName)) return el;
+        let cur = el.parentElement;
+        for (let i = 0; i < 4 && cur; i++) {
+            try { if (cur.matches && cur.matches(CLICKABLE)) return cur; } catch (_) {}
+            cur = cur.parentElement;
+        }
+        return el;
+    }
+
+    // What a click is SUPPOSED to move. A gate button is torn out of the document, a
+    // checkbox flips `checked`, a disclosure flips aria-expanded, a panel toggle in page
+    // chrome gets a class from its own handler (often on the parent, hence `pcls`) that
+    // hides it. If none of this moves, the page did not react.
+    //
+    // This exists because "clicked it" and "clicked it and something happened" used to be
+    // the same thing here, and they are not. Markup is routinely served with its handler
+    // attached seconds later — the button is present, visible and completely inert in the
+    // meantime — and every click into that window was reported as a dismissal.
+    // The ancestor chain is not optional. Which element a toggle's handler marks is
+    // entirely up to the site: Wikipedia's panel "hide" button flips a class on the
+    // button's immediate parent, while tests/fixture-late.html flips one on the
+    // grandparent — and looking one level up caught the first and missed the second,
+    // which then ate all four attempts and left the panel toggled back open. Sizes come
+    // along because a section collapsing is often the only visible consequence, and it
+    // changes an ancestor's height without changing anybody's class.
+    function ancestry(el) {
+        const out = [];
+        let cur = el;
+        for (let i = 0; i < 6 && cur && cur.nodeType === 1; i++) {
+            let dim = '';
+            try {
+                const r = cur.getBoundingClientRect();
+                dim = Math.round(r.width) + 'x' + Math.round(r.height);
+            } catch (_) {}
+            out.push((cur.getAttribute('class') || '') + '|' + dim);
+            cur = cur.parentElement;
+        }
+        return out.join('\n');
+    }
+
+    function clickState(el) {
+        return {
+            gone: !el || !el.isConnected,
+            vis: isVisible(el),
+            checked: !!(el && el.checked),
+            disabled: !!(el && el.disabled),
+            expanded: (el && el.getAttribute('aria-expanded')) || '',
+            pressed: (el && el.getAttribute('aria-pressed')) || '',
+            selected: (el && el.getAttribute('aria-selected')) || '',
+            ahidden: (el && el.getAttribute('aria-hidden')) || '',
+            anc: el ? ancestry(el) : '',
+            url: location.href
+        };
+    }
+    function stateMoved(a, b) {
+        for (const k in a) if (a[k] !== b[k]) return true;
+        return false;
     }
 
     const esc = (s) => (window.CSS && CSS.escape) ? CSS.escape(s) : String(s).replace(/[^\w-]/g, '\\$&');
@@ -320,14 +408,40 @@
         run = null;
     }
 
-    // The click itself, split out so debug mode can put a five second gap in front of it
-    // without duplicating the bookkeeping that has to follow it.
-    function performClick(el, now) {
-        realClick(el);
-        run.clicked.push(el);
+    // A click is not an outcome. Every click is followed by a look at whether the page
+    // moved at all, and a step is only counted as done once something did — see
+    // clickState() for what counts. Three states, in order: fire, wait, check.
+    function fireClick(v, now) {
+        // Attempts 1 and 2 go to the nearest real control; if the page has ignored both,
+        // attempt 3 goes to the exact node that was taught instead. One of the two is
+        // wrong on any given site and there is no way to tell which from here.
+        v.hit = (v.tries >= 3) ? v.el : v.target;
+        v.before = clickState(v.hit);
+        v.phase = 'check';
+        v.at = now + VERIFY_MS;
+        run.settleUntil = now + VERIFY_MS;
+        // A retry cycle must not be cut short by the watch window closing under it.
+        run.deadline = Math.max(run.deadline, now + VERIFY_MS + 4000);
+        realClick(v.hit);
+        dbg('clicked step ' + (run.idx + 1) + ' of ' + run.rule.steps.length +
+            (v.tries > 1 ? ' (attempt ' + v.tries + ' of ' + CLICK_TRIES + ')' : '') +
+            (v.hit !== v.el ? ' — on the <' + v.hit.tagName.toLowerCase() + '> around the element taught' : ''));
+    }
+
+    function beginClick(el, now) {
+        run.verify = { el, target: clickTarget(el), hit: null, before: null, tries: 1, phase: 'check', at: 0 };
+        fireClick(run.verify, now);
+    }
+
+    // Called once the click is known to have landed, so the bookkeeping that says "this
+    // step is behind us" happens exactly where that becomes true.
+    function commitClick(now) {
+        const v = run.verify;
+        run.verify = null;
+        run.clicked.push(v.el);
+        if (v.hit && v.hit !== v.el) run.clicked.push(v.hit);
         run.idx++;
         run.settleUntil = now + SETTLE_MS;
-        dbg('clicked step ' + run.idx + ' of ' + run.rule.steps.length);
 
         if (run.idx >= run.rule.steps.length) {
             run.done = true;
@@ -337,8 +451,11 @@
                 rules[run.key].fires = (rules[run.key].fires || 0) + 1;
                 saveRules(rules);
             }
-            log('dismissed the gate (' + run.rule.steps.length +
-                (run.rule.steps.length === 1 ? ' click)' : ' clicks)'));
+            const n = run.rule.steps.length;
+            log(run.noop
+                ? ('ran all ' + n + (n === 1 ? ' click' : ' clicks') +
+                   ', but at least one of them changed nothing on the page')
+                : ('dismissed the gate (' + n + (n === 1 ? ' click)' : ' clicks)')));
             dbg('sequence complete — still watching until the window ends, in case the page puts the gate back');
             // Not disarmed — the window stays open for the re-render case below. The
             // deadline is what ends it.
@@ -377,7 +494,69 @@
             p.hl.stopPulse();
             p.hl.setLabel(p.head + ' — CLICKED');
             run.pending = null;
-            performClick(p.el, now);
+            run.mark = p.hl;   // kept so the verdict can be written into the same label
+            beginClick(p.el, now);
+            return;
+        }
+
+        // A click has been made and is being judged. Nothing else may run until it is
+        // settled, or a step that quietly did nothing would be followed by a hunt for the
+        // next one — which is how a rule used to report success having achieved nothing.
+        if (run.verify) {
+            const v = run.verify;
+            if (now < v.at) return;
+
+            if (v.phase === 'wait') {
+                // Re-resolve rather than reusing the node: between attempts the page may
+                // have re-rendered the control, and clicking a detached copy of it is a
+                // guaranteed no-op that would burn the remaining attempts.
+                const fresh = resolveStep(run.rule.steps[run.idx]);
+                if (!fresh) {
+                    dbg('step ' + (run.idx + 1) + ' went away before the retry — taking that as the click having worked');
+                    commitClick(now);
+                    return;
+                }
+                if (fresh !== v.el) { v.el = fresh; v.target = clickTarget(fresh); }
+                fireClick(v, now);
+                return;
+            }
+
+            // Two independent signs of life: the element moved, or the step stopped
+            // resolving (whole-subtree teardown leaves the measured node detached, and a
+            // detached node's parent class tells you nothing).
+            const moved = stateMoved(v.before, clickState(v.hit));
+            if (moved || !resolveStep(run.rule.steps[run.idx])) {
+                if (run.mark) { try { run.mark.setLabel('GateSkip: click worked'); } catch (_) {} run.mark = null; }
+                commitClick(now);
+                return;
+            }
+
+            if (v.tries >= CLICK_TRIES) {
+                run.noop = true;
+                log('step ' + (run.idx + 1) + ' of ' + run.rule.steps.length +
+                    ' was clicked ' + CLICK_TRIES + ' times and the page never reacted' +
+                    ' — the control is probably not the one the site listens on, or was never wired up');
+                dbg('step ' + (run.idx + 1) + ': ' + CLICK_TRIES + ' clicks, nothing moved on the page at all' +
+                    ' — giving up on this step');
+                if (run.mark) {
+                    try {
+                        run.mark.setColor('#f9e2af');
+                        run.mark.setLabel('GateSkip: clicked ' + CLICK_TRIES + '× — the page did not react');
+                    } catch (_) {}
+                    run.mark = null;
+                }
+                commitClick(now);
+                return;
+            }
+
+            const wait = RETRY_WAIT[Math.min(v.tries - 1, RETRY_WAIT.length - 1)];
+            v.tries++;
+            v.phase = 'wait';
+            v.at = now + wait;
+            run.settleUntil = now + wait;
+            run.deadline = Math.max(run.deadline, now + wait + VERIFY_MS + 4000);
+            dbg('step ' + (run.idx + 1) + ': nothing on the page changed — trying again in ' + wait + 'ms');
+            if (run.mark) { try { run.mark.setColor('#f9e2af'); run.mark.setLabel('GateSkip: no reaction — retrying'); } catch (_) {} }
             return;
         }
 
@@ -427,6 +606,7 @@
             run.vanished = false;
             run.idx = 0;
             run.done = false;
+            run.noop = false;   // a fresh run gets to be judged on its own clicks
             run.clicked.length = 0;
             log('the page replaced the gate — running the sequence again');
             dbg('the page put the gate back — running the sequence again (restart ' + run.restarts + ')');
@@ -452,7 +632,7 @@
             return;
         }
 
-        performClick(el, now);
+        beginClick(el, now);
     }
 
     // A MutationObserver alone misses a gate that is already in the DOM before we start
@@ -485,6 +665,10 @@
         run = {
             rule: hit.rule, key: hit.key, idx: 0, done: false, clicked: [], restarts: 0, vanished: false,
             deadline: Date.now() + watchMs, settleUntil: 0, obs: null, timer: null,
+            // verify: the click currently being judged. noop: at least one step was
+            // clicked to exhaustion without the page reacting, which changes what the
+            // completion line is allowed to claim.
+            verify: null, noop: false, mark: null,
             // Latched for the life of the window: toggling debug mid-countdown would
             // otherwise strand a pending click that nothing is left to fire.
             debug: isDebug(), pending: null
@@ -587,10 +771,17 @@
             e.box.style.height = (r.height + 6) + 'px';
             if (e.lab) {
                 // Above the target, unless the target is against the top of the viewport
-                // — a label drawn off-screen is the same as no label.
+                // — a label drawn off-screen is the same as no label. The right edge
+                // needs the same treatment and did not have it: a control in the top
+                // right corner of a page (page chrome very often is) put its label
+                // straight off the side of the window, where the one line explaining what
+                // was about to be clicked could not be read at all.
                 e.lab.style.display = '';
-                e.lab.style.left = Math.max(4, r.left - 3) + 'px';
                 e.lab.style.top = (r.top > 34 ? (r.top - 32) : (r.bottom + 8)) + 'px';
+                e.lab.style.left = '0px';
+                const w = e.lab.getBoundingClientRect().width || 0;
+                const max = Math.max(4, (window.innerWidth || 0) - w - 6);
+                e.lab.style.left = Math.min(max, Math.max(4, r.left - 3)) + 'px';
             }
         }
     }
@@ -812,6 +1003,18 @@
             const n = path[i];
             if (!n || n.nodeType !== 1) continue;
             try { if (n.matches && n.matches(CLICKABLE)) return n; } catch (_) {}
+        }
+        // Nothing in the path admits to being a control. That is ordinary for a close
+        // button built from a <div> with an addEventListener and no role, tabindex or
+        // onclick attribute — and the fallback below would then record the <path> inside
+        // its icon, whose selector is fragile and which is not what the site listens on.
+        // `cursor: pointer` is what such a thing looks like from the outside.
+        for (let i = 0; i < path.length && i < 8; i++) {
+            const n = path[i];
+            if (!n || n.nodeType !== 1 || n === document.body || n === document.documentElement) continue;
+            let st;
+            try { st = getComputedStyle(n); } catch (_) { continue; }
+            if (st && st.cursor === 'pointer') return n;
         }
         for (const n of path) if (n && n.nodeType === 1) return n;
         return null;
