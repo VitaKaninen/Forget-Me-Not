@@ -14,10 +14,10 @@
 // @downloadURL https://raw.githubusercontent.com/VitaKaninen/Forget-Me-Not/main/Forget-Me-Not.user.js
 // ==/UserScript==
 
-// The @updateURL / @downloadURL pair above only resolves once this folder is pushed to
-// github.com/VitaKaninen/Forget-Me-Not with `main` as the default branch — same layout as the
-// other scripts in Monkey Scripts. Until then Violentmonkey's update check 404s, which is
-// harmless (it keeps the installed copy) but means nothing arrives on its own.
+// The @updateURL / @downloadURL pair above resolves: the repo exists, `main` is the default
+// branch, and the raw URL was confirmed to return 200 (2026-08-17). Violentmonkey's update
+// check only picks a change up when @version is BUMPED, so an edited-but-unbumped script
+// never propagates to the installed copy — see ../CLAUDE.md.
 
 (function () {
     'use strict';
