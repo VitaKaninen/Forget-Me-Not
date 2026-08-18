@@ -58,9 +58,10 @@ test involving `fixture-iframe.html` records **duplicate steps**, and the real t
 `localhost` noise. Turning the master switch off does not fix it: the message handler that starts
 the recorder is not gated on `isOn()`.
 
-> **Decision owed:** add `// @exclude http://localhost:8731/*` (one line, permanent, costs the
-> ability to run Forget Me Not on the user's own localhost dev pages), or keep disabling the script
-> in Violentmonkey by hand while running fixtures. Not decided.
+> **Decided 2026-08-18: disable the script in Violentmonkey by hand.** The `@exclude` alternative
+> was rejected — it ships permanently to every install and buys nothing for any ordinary user,
+> purely to protect Round 9, which `docs/TESTING.md` itself rates as the least valuable round
+> left. Reversible in one line if the fixtures ever matter more than the real-browser rounds.
 
 **Per-host rules only.** A CMP like OneTrust ships the same `#onetrust-accept-btn-handler` on
 thousands of sites, and today it has to be taught on each one separately. Host keying is

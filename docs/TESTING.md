@@ -334,13 +334,14 @@ but they share the `__forgetmenot__` postMessage tag, so any teaching test invol
 `localhost` noise.
 
 Turning the master switch off does **not** fix this: the message handler that starts the
-recorder is not gated on it. The clean options are:
+recorder is not gated on it.
 
-- **Disable the Forget Me Not script in Violentmonkey** while running fixtures (zero change to
-  the script), or
-- add `// @exclude http://localhost:8731/*` to the header — a one-line permanent fix, at the
-  cost of Forget Me Not never running on your own localhost dev pages. Say the word and I will
-  make it.
+**Settled 2026-08-18 — disable the script in Violentmonkey by hand while running fixtures.**
+An `// @exclude http://localhost:8731/*` header line was considered and rejected: it ships to
+every install, benefits no ordinary user, and exists only to protect Round 9 — the round this
+very section rates as the least valuable left to run. Paying a permanent cost in shipped
+metadata to protect the cheapest round is the wrong trade. It stays a one-line change if the
+fixtures ever become the main harness again.
 
 ```bash
 python -m http.server 8731
