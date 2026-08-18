@@ -1,4 +1,11 @@
-# Testing v0.14.0 in your own browser
+# Testing Forget Me Not
+
+**Part 1** is the checklist for testing in a real browser — that is where the untested surface is.
+**Part 2** is reference material for the local fixture harness.
+
+---
+
+# Part 1 — testing v0.14.0 in your own browser
 
 Written 2026-08-17. Everything in v0.12.0–v0.14.0 (capture, replay, re-assertion, the loss
 watcher, early drift repair) was verified **only** in the Browser pane against localhost —
@@ -312,7 +319,7 @@ documents it. Two different things to look at:
 
 ## Round 9 — the local fixtures (optional, and lower value than it looks)
 
-The nine fixtures in `tests/` state their own pass criteria and are the fastest deterministic
+The nine fixtures in `../tests/` state their own pass criteria and are the fastest deterministic
 signal there is — but every one of them was already driven against this exact script file, and
 they load the script themselves via `<script src="../Forget-Me-Not.user.js">` on top of a
 `localStorage` GM shim. Running them in your browser therefore adds only "does this work in
@@ -392,3 +399,166 @@ Send: the **saved trace** (it is the whole point), what you saw on screen, and w
 The one thing to include without being asked is **whether the page looked right** — because the
 failure this project keeps hitting is a trace claiming success over a page that plainly did not
 work, and only you can see both halves.
+
+---
+
+# Part 2 — the local fixture harness (reference)
+
+Moved here from `../CLAUDE.md` 2026-08-18. This is reference material for driving the
+fixtures, not a checklist — read it when you are writing or running one. Round 9 above
+explains why the fixtures are lower value than they look once the script is installed in a
+real browser, and the two-copies collision to avoid.
+
+
+`../tests/gm-shim.js` backs `GM_*` with `localStorage` (persistent, shared across frames —
+matches real GM semantics; sessionStorage would lose rules on reload, which is what the
+tests check) and parks menu commands on `window.__gsMenu`.
+
+`.claude/launch.json` serves the folder on port 8731 via `python -m http.server`.
+
+Fixtures: `fixture-simple.html` (plain gate, injected after load, gate markup also in the
+served HTML), `fixture-shadow.html` (two-step gate behind an open shadow root, confirm
+button disabled until the box is ticked), `fixture-iframe.html` + `gate-inner.html` (gate
+only inside an embedded frame), `fixture-late.html` (both controls in the served HTML but
+inert until 2000ms, plus a panel toggle that stays visible and only flips a class on its
+**grandparent**), `fixture-icon.html` (gate arrives at 12s, past the old watch window, and its
+close control is a `<div>` with a listener and no role, whose only clickable-looking hint is an
+inherited `cursor: pointer` — the exact shape that beat v0.3.0). Most expose
+`window.__verdict()` returning the pass/fail state (`fixture-shadow.html` does not; read the
+trace instead).
+
+`fixture-late.html` takes three knobs, and they reproduce three different false positives:
+`?wire=<ms>` (how late the handlers bind — beat v0.4.0), `?churn=1` (a stream of class changes
+on `<html>` plus ancestor boxes settling — beat v0.5.0), `?grow=<ms>` (the taught control's own
+box changes size once, early, for a reason unrelated to the click — beat v0.6.0). They compose.
+
+**Driving a fixture does not require the teach flow.** Writing `GM:fmn_rules` straight into
+`localStorage` is quicker and makes the test say what it is testing. A step is just
+`{path:[{s,l}], text, tag, label}`, `text` is the lowercased visible text (`''` skips the text
+filter), and one `path` entry per shadow root crossed. Then `location.reload()` and read
+`GM:fmn_trace`. Remember the v2 wrapper — steps go inside a **sequence**, inside `clicks`:
+
+```js
+localStorage.setItem("GM:fmn_rules", JSON.stringify({
+  localhost: { v: 2, host: "localhost", subdomains: false, enabled: true, prefs: null,
+    clicks: [{ id: "s1", label: "", created: Date.now(), watchMs: 0, fires: 0, lastFired: 0,
+      steps: [{ path: [{ s: "#enter", l: "#enter" }], text: "yes, i am over 18",
+                tag: "button", label: "Yes, I am over 18" }] }] }
+}));
+```
+
+`label: ""` is fine — `seqName()` falls back to the first step that has a `text`, so the log
+line reads `dismissed “Yes, I am over 18”`. It prefers a step *with* a caption on purpose: a
+gate's step 1 is very often a checkbox, whose label is the useless `input (no text)`.
+
+**All fixtures share one host (`localhost`) and rules are keyed by host, so there is exactly
+one rule slot for all of them.** Teaching a second fixture silently overwrites the first, and
+worse, a stale rule from another fixture *fires* on the next one — `fixture-late.html` and
+`fixture-simple.html` both have a "Yes, I am over 18" button, so the stale rule dismissed the
+gate before the teach flow could record it, which reads as a broken recorder. `localStorage.clear()`
+**and reload** between fixtures; clearing without reloading is too late, the rule already armed.
+
+Driving them from the browser console / a CDP `evaluate` is enough — teach via
+`__gsMenu["Forget Me Not: teach this page"]()`, click the gate, then click **Save** inside
+`document.getElementById('gs-popup').shadowRoot`, then reload and read `GM:fmn_log`.
+
+
+### The preference fixtures (M2, written 2026-08-17 — before any pref code exists)
+
+Four pages, one mechanism each, plus `../tests/pref-probe.js`. All four were verified against the
+real behaviour they claim on 2026-08-17; none of them needs the storage shape or a line of pref
+code to exist, which is why they could be written first. Each is a description of *site*
+behaviour, and each says on the page itself what passing looks like.
+
+| fixture | isolates | entry kinds it exercises |
+|---|---|---|
+| `fixture-pref-ls.html` | rung 2 | `ls` (theme), `ss` (a session banner) |
+| `fixture-pref-dom.html` | rung 1 | `attr` on `:root`, `class` on `body` |
+| `fixture-pref-hostile.html` | re-assertion | `class` on `:root`, under attack |
+| `fixture-pref-noise.html` | the rolling baseline + the classifier | capture side only |
+
+**`fixture-pref-ls.html` is built to discriminate, not merely to demonstrate.** Its head script
+assigns `document.documentElement.className` outright from `localStorage['fmnfix.theme']` on
+every load, so a replay that writes only the class is erased before first paint and the page
+comes up light. `sawAtParse` in the verdict is the honest signal — it is `"dark"` only if the
+value was in storage *before any site script ran*, which no amount of later DOM re-assertion can
+fake. Verified: `sawAtParse: "dark"` at +1ms, `bg: rgb(32, 33, 34)`, banner suppressed by
+`ss`.
+
+**`fixture-pref-dom.html` touches no storage at all, and that is the assertion.** A capture here
+must produce exactly two DOM entries and `ls`/`ss` of `{}`; any storage entry in the diff was
+invented. It also carries the `body` class case — the entry that cannot be written at
+document-start because `<body>` does not exist yet.
+
+**`fixture-pref-hostile.html?reset=<ms>[,<ms>…]`** rewrites the whole root class list at each
+listed moment (default `1000`, inside the ladder, so the default run must recover). `?reset=6000`
+lands after the last re-assertion point and the preference is *genuinely lost* — the requirement
+there is that the loss is visible, not that it is prevented. Measured: a stand-in write at
++4671ms, wiped at +12008ms, both in the timeline with the site's own mark next to the wipe.
+
+**`fixture-pref-noise.html` states the baseline requirement as a table on the page.** It spends
+`?startup=<ms>` (default 1200) writing three root classes, a root attribute, a body class, four
+`ls` keys and two `ss` keys — none of which may appear in a capture, because all of it happens
+before the user touches anything. One click on Toggle theme then produces exactly four diff
+entries, and **two of them are site-caused and must arrive unticked**: the site bumps
+`fmnfix.analytics.lastSeen` (13-digit) and writes `fmnfix.clickId` (a UUID) *in the same
+handler*. That mix is deliberate and cannot be baselined away — it is the whole reason the
+review step exists, and the reason its question is "which of these did you mean to set?".
+Measured delta after one click: `+theme-dark`, `fmnfix.theme`, `lastSeen` changed, `clickId`
+new, and nothing else.
+
+`../tests/pref-probe.js` loads **after `gm-shim.js` and before the userscript**, so the first thing
+it records is the served state. It gives every fixture the same `window.__probe`: a `timeline`
+of attribute changes on `:root`/`body` with `+NNNNms` stamps (same convention as the trace), a
+`snap()` of classes/attributes/storage, `firstInteraction` measured independently of whatever
+will freeze the baseline, and `trace(n)` for the tail of `GM:fmn_trace`. The site marks its own
+writes with `__probe.mark(…)`, so **a timeline entry with no site mark beside it came from
+outside the page** — that is the only attribution available from in there, and it is what the
+hostile fixture is read with.
+
+Two traps this set has that the click fixtures do not:
+
+- **`gm-shim.js` puts GM storage in page `localStorage`, which is the very thing a pref capture
+  snapshots.** In the real script GM storage is a separate store the page cannot see. `__probe`
+  filters `GM:*` out of its own views, but **capture code will not** — so do not teach a click
+  rule on a pref fixture: an armed runner writes trace lines all through the page's life, and
+  those writes land after the baseline freezes and show up in the diff as site storage. With no
+  rule stored, the only GM writes are `fmn_v1_cleared` and one `no rule for localhost` trace
+  line, both at document-start, both safely inside the baseline. Verified.
+- **A fixture's "Forget this site" button clears `fmnfix.*` keys only — never
+  `localStorage.clear()`.** Clearing everything would also wipe GM storage, i.e. the rules and
+  trace belonging to the thing under test, and the page would look like it had reset itself
+  correctly while quietly disarming the script. (Between *different* fixtures the blanket clear
+  is still right — see the shared-host trap above.)
+
+**`fixture-simple.html` legitimately logs a RESTART about half the time, and it is not a bug.**
+It detaches its gate at parse time and re-attaches it at 400ms, so whether you get one
+dismissal or "dismissed → the page replaced the gate → dismissed" depends purely on when the
+first click lands relative to that — and the Browser pane throttles timers in a hidden tab,
+which moves it. Before calling it a regression, count the `armed for` lines in the trace: **one
+means the restart path fired correctly; two would mean the double-arm bug** (`armedUrl` guard),
+which is a real bug this project has had. The end state (`gateGone`) is the thing to assert on.
+
+
+## Fixture-writing traps (bit me twice in one session)
+
+
+Attaching a listener with `document.getElementById(...)` **after** detaching the element's
+container returns `null` — the element is no longer in the document. Wire listeners first,
+or query inside the detached subtree. Same applies to `shadowRoot.getElementById`. Both
+fixtures had this and it looked exactly like a Forget Me Not bug (recorded the click, gate did
+not close).
+
+
+## Testing traps that cost time in the v0.9.0 pass
+
+
+- **The teach-time highlight is bound to `mouseover`, not to clicks** (`onRecMove`). A probe
+  that fires a synthetic `el.click()` records the step correctly but never creates `#gs-hl` at
+  all — which reads exactly like "the highlight layer is broken". To exercise `hlPaint`,
+  dispatch a real `mouseover` with `composed: true` (needed to escape a shadow root).
+- **Do not assert on the popup's rendered text to check what was recorded.** A checkbox's step
+  is labelled `input (no text)`, not its caption, so a regex for the visible label reports a
+  false failure. Read `sessionStorage.fmn_teach` — it is the actual recorded state.
+- The runner dismisses the gate on load, so a fixture opened with a rule already stored has no
+  gate left to teach against. Clear storage **and reload** before any teach-flow test.

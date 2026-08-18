@@ -135,10 +135,12 @@ replaced it. Nothing in this script should ever alter timing in order to explain
 
 ## Tests
 
-`tests/` holds five fixtures — a plain gate, a two-step gate behind a shadow root, a gate
-inside an embedded frame, one whose controls sit inert for two seconds before their
-handlers arrive, and one whose gate does not appear until twelve seconds in — plus a `GM_*`
-shim so the script can be loaded by a plain page. Serve the folder and open them:
+`tests/` holds nine fixtures — five for the click runner (a plain gate, a two-step gate behind
+a shadow root, a gate inside an embedded frame, one whose controls sit inert for two seconds
+before their handlers arrive, and one whose gate does not appear until twelve seconds in) and
+four for preferences (one per mechanism: local storage, the page's own DOM, a site that keeps
+taking the preference back, and a noisy start-up) — plus a `GM_*` shim so the script can be
+loaded by a plain page, and a shared probe. Serve the folder and open them:
 
 ```bash
 python -m http.server 8731

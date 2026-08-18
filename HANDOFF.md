@@ -1,308 +1,103 @@
 # Handoff — start here
 
-Written 2026-08-17 at the end of a long session. Everything below is decided, not open for
-re-litigation, unless it says otherwise.
+Rewritten 2026-08-18. This is the **forward-looking** document: where things stand, what is
+open, what to be careful of. The narrative of how each decision was reached moved to
+[`docs/HISTORY.md`](docs/HISTORY.md), which is indexed and deliberately not loaded until needed.
+
+Read order for a new session: this file → [`CLAUDE.md`](CLAUDE.md) (auto-loaded anyway) → then
+only the document the task actually needs.
 
 ## Where things stand
 
-- **v0.9.0, working.** All five fixture scenarios re-verified 2026-08-17 after debug mode was
-  removed, driven from the Browser pane against `python -m http.server` on 8731:
-  `fixture-late.html?wire=8000&grow=1` (retried through the dead window across 5 attempts, no
-  false positive on the layout noise, committed at +10411ms on "the step stopped resolving",
-  panel collapsed), `fixture-simple.html`, `fixture-iframe.html` (frame armed and dismissed
-  independently, `⧉` prefix intact), `fixture-icon.html` (12s gate caught, `<path>` → `<div.x>`
-  candidate walk worked), `fixture-shadow.html` (checkbox committed on `'checked' changed`,
-  then the button that was disabled until ticked). Settings, teaching and the highlight layer
-  were checked separately.
-- The user confirmed v0.7.0 on real Wikipedia with debug off — the "only works when debug is
-  on" bug is dead. Root cause was the success test reading the clicked element's own box
-  resizing (web font arriving) as proof the click worked; see the v0.7.0 section of `CLAUDE.md`.
-- **The project has been re-scoped.** It is no longer "skip gates". It is "keep my site
-  preferences without letting the site track me". Read **"Why the project exists"** at the top
-  of `CLAUDE.md` before designing anything — it carries the replay ladder and the privacy
-  reasoning, including two arguments that were made, tested and **withdrawn**. Do not
-  reinvent them.
-- **The design for the new subsystem is written**: `docs/PREFS.md`. It is complete enough to
-  build from.
-- **v0.14.0 is the current script. M0–M5 are all done and the plan below is complete.** M2 added
-  the four fixtures, M3 the capture half, M4 replay, M5 Wikipedia. What remains is the part that
-  needs your browser rather than this one — the checklist at the end of M5.
+**v0.14.0, M0–M5 complete, installed and working in the user's own browser.**
 
-## Step 0 — the rename. ✅ DONE 2026-08-17.
+- The click half has been stable since v0.9.0 and is verified against all five click fixtures.
+- The preference half (capture, replay, re-assertion, early drift repair, the loss watcher) was
+  built across v0.12.0–v0.14.0 and verified against four preference fixtures plus Wikipedia's own
+  served markup.
+- **2026-08-18: the user ran the first rounds of [`docs/TESTING.md`](docs/TESTING.md) in
+  Violentmonkey and reported them working.** That closes the largest gap — the script runs under
+  real Violentmonkey with real GM storage, and the Wikipedia flow behaves. Recorded as reported;
+  no trace was reviewed here, so treat it as "works" rather than "measured".
+- The old GateSkip script is uninstalled, so the two-copies click-collision hazard is gone.
 
-Local rename is complete and committed as v0.8.0. What actually happened:
+## What is still unverified
 
-- Steps 1–4 done. The folder move was done by moving `GateSkip`'s **contents** (including
-  `.git`) into the already-existing `Forget-Me-Not` folder, not by renaming the directory —
-  the new folder already held a copy of this file and was a live session's cwd. History is
-  intact; `git log` still reaches v0.2.0.
-- **Step 5 done.** Verified 2026-08-17: `origin` is `VitaKaninen/Forget-Me-Not.git`, `main`
-  is pushed and in sync, and the `@updateURL` raw URL returns 200.
-- **Step 7 done** for the repo — `VitaKaninen/GateSkip` no longer resolves. The gist is
-  unverified from here.
-- **Step 6 is unverified from here** — whether the old GateSkip script is uninstalled from
-  Violentmonkey can only be checked in the browser. Both `@match *://*/*`; two copies
-  running at once is the "two userscripts fighting over the same click" hazard in
-  `../CLAUDE.md`.
-- One judgement call beyond the written plan: `TAG = '__gateskip__'` → `'__forgetmenot__'`.
-  It is the cross-frame postMessage discriminator, ephemeral and never persisted, so it is
-  not in the same class as the `gs_*` keys below. The one way it can bite is an old and a
-  new copy installed simultaneously in different frames of the same page — which step 6
-  exists to prevent.
+Rounds 4–9 of `docs/TESTING.md`, in rough order of how likely they are to find something:
 
-The original plan follows, kept for the record.
+1. **Re-assertion's own `touched` gate** (Round 2, step 12). Inspected, never measured — the
+   automated tooling could not deliver a trusted click inside the first second of a page load.
+   This is the single most likely thing to be wrong.
+2. **First paint against a real network.** Every timing number on record came from localhost,
+   where DOMContentLoaded is ~50ms. A cold cache moves everything, and `watchEarlyDrift` is
+   bounded at `EARLY_FIXES` (5).
+3. **The click runner on framework-generated markup.** All five click fixtures are hand-written
+   HTML. `jackdaniels.com` (Round 5) is its first real test — React-generated ids, an age gate and
+   a OneTrust banner in one document.
+4. **The classifier against real telemetry** (Round 4b, MDN's Glean keys).
+5. **The `body`-attribute deferred replay path** (Round 4c, Material for MkDocs) — the entry that
+   cannot be written at document-start.
+6. **Cross-frame** (Round 6). May be untestable from a US IP, since most CMP-in-an-iframe walls
+   are EU-only. Say so rather than forcing it.
 
-The project is being renamed **GateSkip → Forget Me Not**. Do it before writing anything new,
-because the old name is baked into paths, headers and URLs, and fixing that afterwards is the
-"moving causes problems later" the user explicitly wants to avoid.
+## Outstanding issues
 
-Conventions confirmed from the sibling scripts in `Monkey Scripts`:
+**Replay does not re-run on SPA navigation.** Found 2026-08-18 by reading the code:
+`onUrlMaybeChanged` calls `arm()` only, so the click runner re-arms per URL change and the
+preference half does not. Preferences are replayed once at document-start and never again for the
+life of an SPA session — and `touched` is true after the first click anyway, so re-assertion would
+be off regardless. Probably harmless (the root class usually survives an in-page navigation), but
+untested. The case that would break it is a site whose route changes rewrite the root element.
+Round 7 settles it with one measurement.
 
-| | Value |
-|---|---|
-| Folder | `Forget-Me-Not` (hyphenated — GateSkip was the outlier) |
-| Script file | `Forget-Me-Not.user.js` |
-| `@name` | `Forget Me Not` (spaced) |
-| `@updateURL` / `@downloadURL` | `https://raw.githubusercontent.com/VitaKaninen/Forget-Me-Not/main/Forget-Me-Not.user.js` |
+**The local fixtures collide with the installed script.** Every fixture loads the userscript itself
+via `<script src="../Forget-Me-Not.user.js">` on top of a `localStorage` GM shim, so with v0.14.0
+installed and matching `*://*/*` a fixture page runs **two copies**. Separate rule stores, so they
+mostly ignore each other — but they share the `__forgetmenot__` postMessage tag, so any teaching
+test involving `fixture-iframe.html` records **duplicate steps**, and the real trace fills with
+`localhost` noise. Turning the master switch off does not fix it: the message handler that starts
+the recorder is not gated on `isOn()`.
 
-`Monkey Scripts` is **not** itself a git repo — each script is its own repo. Keep the local
-git history; do not start a fresh one. The commit trail v0.2.0 → v0.7.0 documents four rounds
-of misdiagnosis and is the second most valuable thing here after `CLAUDE.md`.
+> **Decision owed:** add `// @exclude http://localhost:8731/*` (one line, permanent, costs the
+> ability to run Forget Me Not on the user's own localhost dev pages), or keep disabling the script
+> in Violentmonkey by hand while running fixtures. Not decided.
 
-Order:
+**Per-host rules only.** A CMP like OneTrust ships the same `#onetrust-accept-btn-handler` on
+thousands of sites, and today it has to be taught on each one separately. Host keying is
+deliberate and well-reasoned (see `CLAUDE.md`), so this is a feature request, not a bug — but it is
+the most obvious source of repeated labour once real browsing starts.
 
-1. Rename the directory `Monkey Scripts\GateSkip` → `Monkey Scripts\Forget-Me-Not`. `.git`
-   travels with it, history intact.
-2. `git mv GateSkip.user.js Forget-Me-Not.user.js`.
-3. Header: `@name`, `@description`, `@updateURL`, `@downloadURL`, and the explanatory comment
-   under the header block that names the old repo. Bump `@version` and `VERSION`.
-4. The four `GM_registerMenuCommand` labels (`GateSkip: …`), and the repo URL in `README.md`
-   (~line 128).
-5. Create the GitHub repo `Forget-Me-Not`, `git remote set-url origin …`, push, and confirm the
-   raw URL actually resolves.
-6. **Remove the old script from Violentmonkey BEFORE installing the new one.** Both `@match
-   *://*/*`; two copies running at once would both fire clicks on every page — literally the
-   "two userscripts fighting over the same click" hazard documented in `../CLAUDE.md`.
-7. Deleting the old `GateSkip` GitHub repo and the gist is **the user's to do**, and only after
-   the new install is confirmed working. Do not do it for them.
+## Deliberately deferred
 
-Deliberately NOT part of the rename: the `gs_*` GM storage keys, the `#gs-popup` / `#gs-hud`
-DOM ids, and `__gsMenu` in `tests/gm-shim.js`. Renaming storage keys orphans the user's taught
-rules, so fold that into the M1 migration below — one migration pass, and the rename stays
-behaviour-neutral so any regression is attributable.
-
-Nothing to migrate in `~/.claude/projects/…-GateSkip/memory/` — it is empty. `.claude/launch.json`
-is path-independent (serves the cwd), so it needs no edit.
-
-## Plan, in order
-
-**M0 — Delete debug mode. ✅ DONE 2026-08-17, v0.9.0.** 209 lines removed; all five fixtures
-re-verified afterwards (see below). The trace and the `performClick` split were kept. Write-up
-in `CLAUDE.md`, including the trap that the "Cleanup owed" list it was executed from had gone
-stale and, followed literally, would have deleted the trace's only source of content.
-
-**M1 — Schema v2, new key names, NO migration. ✅ DONE 2026-08-17.** Shipped as two commits so
-a regression would have one candidate cause: **v0.10.0** reshaped storage while the runner
-still used `clicks[0]` (inert — all five fixtures unchanged), **v0.11.0** made the runner arm
-every sequence and teaching append.
-
-`fmn_rules` holds `{v:2, host, subdomains, enabled, clicks:[Seq], prefs:{…}}`. **`clicks` is an
-array**, not the single object originally drafted in `docs/PREFS.md` — the user needs a second,
-unrelated popup taught several pages into a site without wiping the landing page's gate, and
-extra *steps* cannot express that (a sequence blocks on step N before hunting N+1, so the deep
-popup would fire on neither page). Each sequence arms independently and self-selects by whether
-its step 1 resolves; there is no URL matching. Full reasoning in `CLAUDE.md`.
-
-Verified: two sequences running in parallel on one page with independent retry ladders; a
-sequence whose control is absent reporting `NEVER MATCHED` and retiring without interfering;
-teaching a third appending while the first two keep their counters; cross-frame; and the
-`<path>` → `<div.x>` candidate walk. The `gs_*` keys are deleted once on first run.
-
-**There is deliberately no v1→v2 migration, and no back-compat read path.** An earlier draft of
-this plan (and of `docs/PREFS.md`) said to keep one "for a long time; rules are hand-taught and
-expensive to lose". The user settled it 2026-08-17: *"there is no need to keep any of it. It
-takes about 5 seconds to recreate it."* Re-teaching is cheaper than carrying a compatibility
-path forever, so the shape is written clean. This also retires the gate that used to sit here —
-"ship it and confirm the user's taught rules survive a browser restart" — because there is
-nothing left to survive.
-
-Not renamed, on purpose: the DOM ids `gs-popup` / `gs-settings` / `gs-hud` and `__gsMenu` in
-`tests/gm-shim.js`. They are internal, nothing persists them, and churning them adds diff noise
-to exactly the milestones where a regression has to stay attributable.
-
-**M2 — Write the four fixtures before the feature exists. ✅ DONE 2026-08-17.**
-`fixture-pref-ls.html`, `-dom`, `-hostile`, `-noise`, plus the shared instrument
-`tests/pref-probe.js`. No userscript change, so no version bump. Each page states its own pass
-criteria in prose, and all four were driven in a real browser against the behaviour they claim —
-see the "preference fixtures" subsection of `CLAUDE.md` for the measured numbers and the two
-traps that are specific to this set.
-
-The ordering was deliberate: four versions of this project were burned on never having stated
-precisely what "working" means, and a fixture is the cheapest way to state it. (`docs/PREFS.md`'s
-own "Build order" used to list them at step 4, after capture and replay — a direct contradiction
-of this milestone, in the same package. Fixtures-first won; PREFS is corrected.)
-
-Two things worth carrying into M3/M4:
-
-- **A fixture that only *demonstrates* a rung is not worth writing.** `fixture-pref-ls.html`
-  overwrites the root class from storage on every load specifically so that a class-only replay
-  visibly fails there, and `sawAtParse` reports what the site read *before* anything could
-  re-assert. A fixture where both rungs pass would have told us nothing about which one worked —
-  which is the open question PREFS parks under "rung 1 vs rung 2 sufficiency".
-- **`gm-shim.js` backs GM storage with page `localStorage`, which is exactly what a pref capture
-  snapshots.** The probe filters `GM:*` from its own views; capture code will not. Do not teach a
-  click rule on a pref fixture — an armed runner writes trace lines for the life of the page, and
-  those land after the baseline freezes. With no rule stored, GM writes stop at document-start
-  and the diff is clean. Verified rather than assumed.
-
-**M3 — Baseline + "Remember this site" capture + review UI. ✅ DONE 2026-08-17, v0.12.0.**
-Menu command `Forget Me Not: remember this site` (also a button in Settings), the review panel,
-and a `Prefs` button per host card that re-opens the same panel. Nothing captured *does*
-anything yet — replay is M4 — so a regression from this can only be in the UI or the differ.
-
-Measured on the fixtures: `fixture-pref-dom.html` yields 2 entries and no storage rows;
-`fixture-pref-noise.html` yields exactly the 5 its table now names, with the start-up churn
-excluded and the two site-caused rows unticked with reasons; `fixture-pref-ls.html` adds the
-`ss` row; capture with no interaction refuses honestly; re-capture across a reload flips the
-class entries in place instead of accumulating; unticked id-like values are stored redacted;
-Settings' `Prefs` button re-opens the panel with `Captured …` and the redaction note. The click
-half was re-checked on `fixture-simple.html` (dismissed, one `armed for` line).
-
-Three design points that came out of building it are in `CLAUDE.md` under "Capture: baseline,
-classifier, review panel" — the baseline is a single frozen snapshot rather than PREFS's rolling
-poll (and `docs/PREFS.md` is corrected), a class entry's identity is the class name rather than
-the ± sign, and an unticked id-like entry is stored without its value. The second was found by
-the fixture, not by reasoning: with the sign in the identity, flipping a preference and
-capturing again stored both "add it" and "remove it".
-
-**M4 — Replay at document-start + re-assertion + trace lines. ✅ DONE 2026-08-17, v0.13.0.**
-Both rungs work. The two items left over from M3 are done: `arm()` now says `no taught clicks for
-<host> — N preference(s) are replayed here instead`, and the prefs-only rule is handled
-throughout.
-
-Write-up in `CLAUDE.md` under "Replay: rungs 1 and 2, re-assertion, and the loss watcher". The
-three things worth knowing before touching it:
-
-- **The click runner's own synthetic click was freezing the preference baseline** on a host with
-  both halves taught — +7ms, which is document-start in all but name, and re-assertion switched
-  off before the page finished loading. The interaction watcher now ignores untrusted events.
-  This is the "two halves must not interfere" seam failing quietly, and it could only ever show
-  up on a host that has both.
-- **A fixed-time audit was worse than nothing** and `fixture-pref-hostile.html?reset=6000` caught
-  it: it reported "all preferences still hold" three seconds before the site took them back. The
-  positive line is now scoped to `hold as re-assertion finishes`, and a read-only observer
-  reports the first loss afterwards.
-- **Re-assertion can mask a wrong-rung choice.** On `fixture-pref-ls.html` a class-only replay
-  ends up looking identical to the correct rung-2 choice, because re-assertion restores what the
-  site wiped. Never judge a rung by the end state — read `sawAtParse` and the re-assert count.
-
-Not verified live, and stated as such in `CLAUDE.md`: **re-assertion's own `touched` gate**, as
-distinct from the watcher's. It needs a trusted interaction inside the first second of a page
-load, which the test tooling cannot deliver. Inspected only.
-
-**M5 — Wikipedia, anonymous. ✅ DONE 2026-08-17, v0.14.0.** Measured live on
-`en.wikipedia.org/wiki/Cat`, then run end to end against Wikipedia's own served markup with its
-own modules and CSS loading. Capture offered **exactly two entries, both pre-ticked**
-(`+skin-theme-clientpref-night`, `−skin-theme-clientpref-day`); replay produced
-`bg: rgb(32,33,34)` with **no cookie written by us and localStorage untouched**. Full write-up
-in `CLAUDE.md` under "Wikipedia, and the measurement that was wrong".
-
-One finding worth carrying everywhere, because the method failed before the code did:
-
-> **A before/after comparison cannot detect a change that was undone.** Comparing Wikipedia's
-> served `<html class>` against its settled one showed one difference (`client-nojs` →
-> `client-js`) and I reported that MediaWiki does not rewrite the root class list. It does — it
-> assigns the whole `className` from a string captured earlier, restoring the light theme a
-> millisecond after our write. A set difference cannot see that, by construction. Whenever the
-> question is "does this site fight us?", the instrument has to be an observer.
-
-That cost 52ms in the rejected theme, which on a real network load is enough for first paint —
-so `watchEarlyDrift` now repairs drift on the mutation that causes it, bounded by `EARLY_FIXES`
-and handing over at DOMContentLoaded. Re-measured `longestWrongThemeMs: 0`.
-
-**What is left, and only you can do it.** The Browser pane cannot install a userscript, so the
-end-to-end run used Wikipedia's markup served from localhost. Real network timing and the
-container extension are untested. In your own browser:
-
-1. Confirm the old **GateSkip** script is uninstalled from Violentmonkey — still outstanding from
-   the rename, and two copies both matching `*://*/*` is the click-collision hazard in
-   `../CLAUDE.md`.
-2. Install/update to v0.14.0, open `en.wikipedia.org` in a fresh container, set the theme to dark
-   in the Appearance panel, and pick **Forget Me Not: remember this site**. Expect two entries,
-   both ticked.
-3. Open Wikipedia in *another* fresh container. It should come up dark with no flash.
-4. If there is a flash, **Save trace** and look for `re-asserted at start-up` — that line and its
-   `+NNNNms` say whether early repair fired and how late. If it says `re-asserted at DOM ready`
-   instead, `watchEarlyDrift` did not catch it and the fix is there, not in the timings.
-
-**M5 — Wikipedia, anonymous, in a fresh container.** Sidebar closed and dark theme from first
-paint, with nothing transmitted.
-
-## Losing the user's saved rules costs NOTHING. Stop factoring it in.
-
-Stated by the user 2026-08-17, after this kept resurfacing: *"wiping all my saved rules is of
-zero importance to me. I expect that by the time we are done with this project I will have done
-it 30-50 times, and it only takes a few seconds for each one. You need to stop taking it into
-consideration at all."*
-
-This is not "migrations are optional". It is stronger: **rule loss is not a cost, so it may
-never appear in any argument.** Concretely, none of the following are valid reasoning here:
-
-- "Get the schema right now, because reshaping it later means re-teaching." — No. Reshape
-  whenever it is convenient. There is no last chance and no schema debt.
-- "Fold this into M1 while the shape is open." — No. Sequence work by what is clearest to
-  build and easiest to attribute a regression to, and by nothing else.
-- "Add a compatibility read path / keep the old key as a fallback / write a migration." — No.
-  Delete and move on.
-
-The only remaining reason to split work across milestones is **regression attribution** — a
-commit that changes one thing tells you what broke. That reason stands on its own and does not
-need storage to justify it.
-
-## Decisions already made — do not re-open
-
-- **Rung 3 (cookie replay) does not exist.** Reasoning in `CLAUDE.md`; the decisive argument is
-  that cookies are blocked at browser level on this machine, so the write silently no-ops.
-- **Capture is snapshot-and-review, never automatic.** The user's own choice.
-- **v1 DOM targets are `:root` and `body` only.** Arbitrary selectors would drag the click
-  runner's whole resolve-and-retry problem into the replayer.
-- **Re-assertion stops at first user interaction**, same hazard as re-clicking a toggle that
-  stayed on screen.
-- **The two halves share only the settings UI, host-keyed storage, and the trace.** Keep that
-  seam clean. One script, hard internal boundary.
-- GM storage is **not** partitioned per container (confirmed by the user), which is what makes
-  any of this possible.
-
-Settled 2026-08-17, third session — these filled real gaps in the design, they are not restatements:
-
-- **The review list is ONE panel, built once, shown in two places.** It appears immediately
-  after "Remember this site" with the diff pre-ticked, and is re-openable per host from
-  Settings. Both are required: the decision needs the context you have at capture time, but
-  `docs/PREFS.md` also makes trimming a hard requirement ("unticking and re-testing must be one
-  click", because the workflow is to trim until it stops working and step back one), and that is
-  impossible if review only ever happens once. Do not build two separate UIs for this.
-- **The baseline snapshot covers**: the class list and all attributes of `:root` and `body`,
-  plus the complete localStorage and sessionStorage key/value maps. Capture is **top frame
-  only** (the menu commands are already gated on `isTop`); replay is **per frame**. That
-  asymmetry is intended — a frame gets the rule for its own host, or no rule.
-- **The `ss` entry kind stays in v1.** It is worth writing down that it is the weakest of the
-  four, because `docs/PREFS.md` lists it with no argument attached: unlike `ls`, sessionStorage
-  dies with the tab whatever the container does, so replay is not restoring something the
-  container destroyed — it is creating a resumed session that never existed. It survives on the
-  counterfactual test anyway (you would have dismissed that session-scoped banner by hand in
-  every fresh tab) and it shares the `ls` code path entirely, so it is close to free. Drop it
-  without hesitation if it ever costs anything.
-- **`gs_on` (→ `fmn_on`) off means BOTH halves off**, clicks and replay alike. One switch.
+- **Rung 1 vs rung 2 sufficiency.** At capture time both a DOM diff and a storage diff may be
+  present, and knowing which is *sufficient* needs a reload to test. v1 replays whatever was ticked
+  and lets the user trim. An automatic "try fewer entries" pass can come later, once there is
+  evidence about how often it matters. One data point so far: on Wikipedia rung 1 is sufficient
+  alone. Material for MkDocs (Round 4c) offers both and would be the second.
+- **IndexedDB-backed preferences.** Out of v1. Async, awkward, unmeasured — wait for a site that
+  needs it.
+- **Request headers.** A userscript cannot touch them. If server-rendered preferences ever become
+  important, that is an extension, not a feature.
+- **The `ss` entry kind.** The weakest of the four and known to be so. Drop it the moment it costs
+  anything.
 
 ## Standing lessons that keep paying off
 
-- **"It only works when debug is on" is about `DEBUG_DELAY`, not debug** — and the cause has
-  been different every single time. Reproduce in a fixture and run the control against the
-  previous version before believing any theory.
+These are the ones that have caught real bugs more than once. The full set of engineering rules is
+in `CLAUDE.md`; these are the meta-ones about *how to investigate*.
+
 - **A false positive is far worse than a false negative** in any "did it work?" test. A false
-  negative costs a few extra clicks; a false positive writes the step off permanently *and*
-  logs an event that never happened, which destroys the only instrument there is.
+  negative costs a few extra clicks; a false positive writes the step off permanently *and* logs an
+  event that never happened, which destroys the only instrument there is.
 - **Every verdict must name the signal that fired.** A verdict you cannot audit is how three
   versions of misdiagnosis happened.
-- Driving fixtures does not need the teach flow — write `GM:gs_rules` straight into
-  `localStorage`. See the Testing section of `CLAUDE.md`.
+- **A before/after comparison cannot detect a change that was undone.** When the question is "does
+  this site fight us?", the instrument has to be an observer, not a diff.
+- **"It only works when debug is on" is about the delay, not about debug**, and the cause has been
+  different every single time. Reproduce in a fixture and run the control against the previous
+  version before believing any theory.
+- **Nothing in this script may alter timing in order to explain itself.**
+- **Rule loss is not a cost and may never appear in a design argument.** Reshape storage whenever
+  it is convenient; the only reason to split work is regression attribution.
+- Driving fixtures does not need the teach flow — write `GM:fmn_rules` straight into
+  `localStorage`. Recipe in `docs/TESTING.md`, Part 2.

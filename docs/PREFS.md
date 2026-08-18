@@ -1,7 +1,8 @@
 # Preference replay — design
 
-Status: designed 2026-08-17, not yet built. Read the "Why the project exists" section of
-`../CLAUDE.md` first; it carries the privacy reasoning and the replay ladder, and this
+Status: **built and shipped** — M3–M5, v0.12.0–v0.14.0. This document is the design; where the
+implementation departed from it the text says so inline. Read the "Why the project exists" section
+of `../CLAUDE.md` first; it carries the privacy reasoning and the replay ladder, and this
 document assumes both.
 
 Short version: hold the user's site preferences in GM storage, and reapply them at
