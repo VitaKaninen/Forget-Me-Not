@@ -9,7 +9,7 @@ only the document the task actually needs.
 
 ## Where things stand
 
-**v0.14.0, M0–M5 complete, installed and working in the user's own browser.**
+**v0.15.0, M0–M5 complete, installed and in real daily use in the user's own browser.**
 
 - The click half has been stable since v0.9.0 and is verified against all five click fixtures.
 - The preference half (capture, replay, re-assertion, early drift repair, the loss watcher) was
@@ -39,6 +39,43 @@ Rounds 4–9 of `docs/TESTING.md`, in rough order of how likely they are to find
    cannot be written at document-start.
 6. **Cross-frame** (Round 6). May be untestable from a US IP, since most CMP-in-an-iframe walls
    are EU-only. Say so rather than forcing it.
+
+## Found by real browsing, 2026-09-02 (YouTube)
+
+The first bug report from ordinary use rather than a fixture, and it found three separate
+things. Two are fixed in v0.15.0; the third is not a code problem at all.
+
+1. **FIXED — the classifier unticked the one preference that mattered.** `yt-player-quality` is
+   a 104-char JSON blob, so "a long mixed-case token" fired, the value was redacted on save, and
+   replay dropped it. `classify` now walks JSON leaves. Full account: `docs/HISTORY.md` v0.15.0.
+2. **FIXED — the panel clipped values to one line**, so a blob holding both `quality` and
+   `previousQuality` appeared to save a random one of the two. Rows wrap now.
+3. **NOT A BUG — "remember 360p, set it to 720, reload, get 720".** `replayStorage` writes only
+   if the key is absent, and on a reload in the same container the site's newer value is still
+   there. **Testing replay by reloading can never work**; it needs a fresh container. The trace
+   now names the keys it left alone instead of counting them.
+
+### Still open from that report — needs the user
+
+- **The live-chat panel cannot be captured, and this is structural.** Measured on a live stream:
+  closing the chat sets a `collapsed` attribute on `ytd-live-chat-frame#chat` and writes
+  **nothing** to localStorage or sessionStorage, and nothing on `:root` or `body` changes. v1 DOM
+  targets are `:root` and `body` only, so the diff is genuinely empty and "nothing to remember"
+  is the honest answer. Three ways out, and the choice is the user's: teach it as a **click**
+  (rung 4 — works today, no code); widen v1 DOM targets to arbitrary selectors (re-opens a
+  settled invariant, and drags the runner's resolve-and-retry problem into the replayer); or add
+  a narrow **"one extra element" target** — a single taught selector per host alongside `:root`
+  and `body`. The third is the smallest thing that would work and is the one to cost out first.
+- **The chat's own volume slider is unmeasured.** It lives inside the `#chatframe` iframe
+  (`www.youtube.com/live_chat`, same origin, so localStorage IS shared with the top frame). If it
+  writes a key, capture should already see it. If it only mutates DOM inside the frame, it is out
+  of reach for the same reason as the panel — **capture is top-frame only** (`captureNow` returns
+  early unless `isTop`), which is a deliberate asymmetry with replay, and a same-origin frame is
+  the case where it costs something. Needs one measurement on a real stream.
+- **YouTube is the SPA case that makes the replay gap matter.** `onUrlMaybeChanged` re-arms the
+  click runner and not the preference half, and on YouTube almost every page view after the first
+  is an in-document navigation. Storage replay is unaffected (a key written at document-start
+  survives the session), but DOM entries are applied exactly once, for the first video only.
 
 ## Outstanding issues
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        Forget Me Not
 // @namespace   https://github.com/VitaKaninen
-// @version     0.14.0
+// @version     0.15.0
 // @author      VitaKaninen
 // @description Teach it, once, which clicks dismiss a site's age gate, cookie wall or unwanted panel — then it remembers, and does that for you on every later visit. Nothing is guessed and nothing fires until you have taught it.
 // @match       *://*/*
@@ -1580,7 +1580,7 @@
     // mean to set?" — and is not an authority on safety.
     const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
     const ID_WORDS = ['id', 'ids', 'uid', 'uuid', 'guid', 'sid', 'session', 'token', 'auth',
-                      'visitor', 'device', 'fingerprint', 'tracking', 'analytics'];
+                      'visitor', 'device', 'devices', 'fingerprint', 'tracking', 'analytics'];
 
     // Whole words only, splitting on punctuation AND camelCase humps. A bare substring
     // test is unusable here: "id" is inside `sidebar`, `hidden`, `width` and `provider`,
@@ -1593,15 +1593,24 @@
             .filter(Boolean);
     }
 
-    function classify(name, value) {
-        const v = value == null ? '' : String(value);
+    // What to make of ONE opaque value. Split out of classify() so that a STRUCTURED
+    // value can be judged by its leaves instead of by the shape of the wrapper around
+    // them. `inLeaf` drops the bare-timestamp rule, which is sound applied to a whole
+    // storage value and wrong applied inside one — see classify().
+    function classifyScalar(name, v, inLeaf) {
         // Value first, then the name: when both fire, "looks like a UUID" tells the user
         // more than "the key is called clickId" does.
         if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v))
             return { flag: 'idlike', why: 'looks like a UUID' };
         if (UUID_RE.test(v))
             return { flag: 'idlike', why: 'contains a UUID' };
-        if (/^\d{10,}$/.test(v))
+        // A bare 10+ digit value in storage is a timestamp or an id and either is worth a
+        // second look. The SAME digits sitting in a field beside `quality: 720` are a
+        // timestamp with the structure to prove it, and flagging those would undo the
+        // whole point of walking the leaves: every JSON wrapper on the web carries a
+        // `creation` or an `expiration`. A numeric id inside a blob is still caught, by
+        // its field name, through ID_WORDS below.
+        if (!inLeaf && /^\d{10,}$/.test(v))
             return { flag: 'idlike', why: 'a ' + v.length + '-digit number — almost always a timestamp or an id' };
         if (v.length >= 24 && /^[A-Za-z0-9+/]+={0,2}$/.test(v) && /[A-Z]/.test(v) && /[a-z]/.test(v))
             return { flag: 'idlike', why: 'looks like base64 or a token (' + v.length + ' chars)' };
@@ -1611,6 +1620,85 @@
             return { flag: 'idlike', why: 'a long value (' + v.length + ' chars) — contents not reviewed' };
         const words = nameWords(name);
         const hit = ID_WORDS.find(w => words.includes(w));
+        if (hit) return { flag: 'idlike', why: 'the name contains “' + hit + '”' };
+        return { flag: 'ok', why: '' };
+    }
+
+    // How far into a structured value to look. Bounded, because this walk is the whole
+    // difference between "reviewed" and "vouched for": a blob too wide or too deep to
+    // walk is one the classifier cannot speak for, and it has to say so rather than pass
+    // it through as ordinary.
+    const LEAF_MAX = 60, LEAF_DEPTH = 6;
+
+    // Parse a value as JSON — including the extremely common habit of nesting a JSON
+    // STRING inside a JSON field, which is what a storage wrapper with expiry metadata
+    // produces. null when the value is not JSON at all.
+    function asJson(v) {
+        const s = String(v).trim();
+        if (s.length < 2 || (s[0] !== '{' && s[0] !== '[')) return null;
+        try {
+            const p = JSON.parse(s);
+            return (p && typeof p === 'object') ? p : null;
+        } catch (_) { return null; }
+    }
+
+    // Collect every scalar inside a parsed value as [fieldName, text]. Returns false if
+    // the walk hit a bound, i.e. the value was NOT fully reviewed. Array elements inherit
+    // the array's own field name, so a leaf name stays something the user would recognise.
+    function jsonLeaves(node, name, out, depth) {
+        if (out.length >= LEAF_MAX || depth > LEAF_DEPTH) return false;
+        if (node === null || node === undefined) return true;
+        if (typeof node === 'object') {
+            const arr = Array.isArray(node);
+            let whole = true;
+            for (const k of Object.keys(node)) {
+                if (!jsonLeaves(node[k], arr ? name : k, out, depth + 1)) whole = false;
+            }
+            return whole;
+        }
+        const s = String(node);
+        const inner = asJson(s);
+        if (inner) return jsonLeaves(inner, name, out, depth + 1);
+        out.push([name, s]);
+        return true;
+    }
+
+    // A value that PARSES AS JSON is not opaque, and the length-and-character-mix rules
+    // must not be run on the wrapper. Measured on YouTube 2026-09-02: `yt-player-quality`
+    // holds
+    //     {"data":"{\"quality\":720,\"previousQuality\":1080}","expiration":…,"creation":…}
+    // — 104 chars, mixed case, digits — so "a long mixed-case token" fired, and the one
+    // entry the user had come to save arrived UNTICKED while three keys they did not care
+    // about arrived ticked. Saving without noticing the box redacts the value, and replay
+    // drops redacted entries, so setting the quality twenty times in a row changed nothing
+    // whatsoever. Whether a JSON preference was pre-ticked came down to whether it happened
+    // to contain a capital letter: `yt-player-volume` ({"volume":35,"muted":false}) has
+    // none and passed. That is not a judgement, it is a coin toss.
+    //
+    // So a structured value is judged by its LEAVES. That still catches the real hazard —
+    // `yt-remote-device-id` carries a UUID in its `data` field — without condemning every
+    // JSON preference on the web for the crime of being long.
+    function classify(name, value) {
+        const v = value == null ? '' : String(value);
+        // Valid on the raw text whatever its shape, and cheaper than parsing.
+        if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v))
+            return { flag: 'idlike', why: 'looks like a UUID' };
+        if (UUID_RE.test(v))
+            return { flag: 'idlike', why: 'contains a UUID' };
+
+        const parsed = asJson(v);
+        if (!parsed) return classifyScalar(name, v, false);
+
+        const leaves = [];
+        if (!jsonLeaves(parsed, name, leaves, 0))
+            return { flag: 'idlike', why: 'a structured value with more in it than can be reviewed here' };
+        for (const [k, s] of leaves) {
+            const r = classifyScalar(k, s, true);
+            if (r.flag === 'idlike') return { flag: 'idlike', why: '“' + k + '” ' + r.why };
+        }
+        // The key's own name still decides. A blob called `sessionState` is one to look at
+        // however innocent each field inside it looks on its own.
+        const hit = ID_WORDS.find(w => nameWords(name).includes(w));
         if (hit) return { flag: 'idlike', why: 'the name contains “' + hit + '”' };
         return { flag: 'ok', why: '' };
     }
@@ -1852,12 +1940,19 @@
                     body.appendChild(head);
 
                     if (e.kind === 'ls' || e.kind === 'ss' || (e.kind === 'attr' && e.value !== null)) {
+                        // WRAPPED, not clipped to one line. A JSON preference routinely
+                        // carries several numbers — YouTube's quality key holds both
+                        // `quality` and `previousQuality` — and a single ellipsised line
+                        // shows some of them and hides the rest, so which value the panel
+                        // appears to be offering depends on where the cut happens to land.
+                        // That reads as the wrong value being saved at random. Four lines
+                        // is enough for every real preference; the title still holds it all.
                         const val = document.createElement('div');
                         val.style.cssText = 'font: 11px/1.4 ui-monospace, Consolas, monospace; color: #a6adc8;' +
-                            'overflow: hidden; text-overflow: ellipsis; white-space: nowrap;';
+                            'white-space: pre-wrap; overflow-wrap: anywhere; max-height: 5.6em; overflow: hidden;';
                         val.textContent = e.redacted && !e.enabled
                             ? '(value not kept — re-capture to restore it)'
-                            : shortVal(String(e.value), 140);
+                            : shortVal(String(e.value), 400);
                         val.title = e.redacted && !e.enabled ? '' : String(e.value == null ? '' : e.value);
                         body.appendChild(val);
                     }
@@ -2058,7 +2153,15 @@
     // whatever it was going to read, and writing again mid-visit would only fight a value
     // the site chose, invisibly, until the next load.
     function replayStorage(entries) {
-        let wrote = 0, kept = 0;
+        let wrote = 0;
+        // The kept KEYS, not a count. "left 1 already there" and "left
+        // yt-player-quality already there" are the same fact, but only the second one
+        // answers the question the user is actually asking — why the preference they
+        // saved did not come back — and this is the one rung whose no-op is invisible
+        // from the page. It is also the trap in testing it: reloading in the same
+        // container leaves the site's own value in place, so replay correctly does
+        // nothing and looks broken.
+        const kept = [];
         for (const e of entries) {
             if (e.kind !== 'ls' && e.kind !== 'ss') continue;
             if (e.value == null) continue;
@@ -2069,7 +2172,7 @@
                 // kept it and the user may have changed it since. Overwriting would stamp
                 // an old preference back over a newer one — the same harm as re-clicking a
                 // toggle that stayed on screen.
-                if (store.getItem(e.key) !== null) { kept++; continue; }
+                if (store.getItem(e.key) !== null) { kept.push(e.key); continue; }
                 store.setItem(e.key, String(e.value));
                 wrote++;
             } catch (_) {}
@@ -2229,8 +2332,11 @@
         if (!p) return;
         const s = replayStorage(p.entries);
         const d = replayDom(p.entries);
-        dbg('replaying preferences for ' + p.key + ' — storage: wrote ' + s.wrote + ', left ' + s.kept +
-            ' already there' + (d.first.length ? '; page: ' + d.first.join(', ') : '; nothing on the page yet'));
+        dbg('replaying preferences for ' + p.key + ' — storage: wrote ' + s.wrote +
+            (s.kept.length ? ', left ' + s.kept.length + ' already there (' + s.kept.join(', ') +
+                ' — this browser still had ' + (s.kept.length === 1 ? 'it' : 'them') + ', so nothing was destroyed to restore)'
+                : ', left 0 already there') +
+            (d.first.length ? '; page: ' + d.first.join(', ') : '; nothing on the page yet'));
 
         const later = (why) => replayPass(why, p.entries);
         if (document.readyState === 'loading') {

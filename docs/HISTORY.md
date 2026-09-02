@@ -24,6 +24,7 @@ arbitrary and you are tempted to ignore it. Every one of them cost at least one 
 | [v0.12.0](#v0120--capture-baseline-classifier-review-panel) | The baseline, the classifier, the review panel | Touching capture |
 | [v0.13.0](#v0130--replay-rungs-1-and-2-re-assertion-and-the-loss-watcher) | Replay, re-assertion, and why a timed audit was worse than nothing | Touching replay |
 | [v0.14.0](#v0140--wikipedia-and-the-measurement-that-was-wrong) | Wikipedia, and a before/after diff that could not see what it was looking for | Measuring whether a site fights us |
+| [v0.15.0](#v0150--the-classifier-was-judging-the-wrapper-not-the-value) | The classifier read a JSON preference as an opaque token and unticked it | Touching `classify` / anything that pre-decides for the user |
 | [The rename](#the-rename-gateskip--forget-me-not-v080) | GateSkip → Forget Me Not | Chasing a stale path or an old URL |
 | [Milestone log](#milestone-log-m0m5) | M0–M5, what each shipped and why it was split that way | Wondering why a change was sequenced the way it was |
 | [Privacy reasoning](#privacy-reasoning--the-long-form) | The long form of the two withdrawn arguments | Tempted to re-open the cookie rung or the review step |
@@ -545,6 +546,108 @@ The snapshot was recycled afterwards; it is not in the repo.
 **What that does not prove:** real network timing (first paint against a cold cache), and the
 user's actual container extension. Those need the script installed in their browser — see
 `../HANDOFF.md` for the short checklist.
+
+---
+
+## v0.15.0 — the classifier was judging the wrapper, not the value
+
+Reported by the user 2026-09-02, from real browsing: **on YouTube, setting the video quality
+and choosing "Remember this site" did nothing. Twenty times in a row.** Alongside it, a second
+complaint that when it *did* appear to save, it saved "the wrong option, seemingly at random —
+540 or 1080".
+
+### What was measured
+
+Not reasoned about — measured, on `youtube.com`, by replaying the capture flow verbatim in a
+real browser: freeze a baseline on the first trusted `pointerdown`, pick a quality from the
+player's own menu, then run `diffPrefs`. YouTube writes exactly one key, exactly once per pick:
+
+```
+yt-player-quality = {"data":"{\"quality\":720,\"previousQuality\":1080}",
+                     "expiration":1819445672904,"creation":1788341672904}
+```
+
+104 characters. Mixed case — the capital `Q` in `previousQuality`. Digits. Which is the whole
+of the fifth classifier rule:
+
+```js
+if (v.length >= 32 && /[A-Z]/.test(v) && /[a-z]/.test(v) && /[0-9]/.test(v))
+    return { flag: 'idlike', why: 'a long mixed-case token (' + v.length + ' chars)' };
+```
+
+So the capture came back with **the one entry the user had come to save unticked**, and three
+keys they had never heard of — `yt-player-performance-cap`, `-active-set`, `yt-player-autonavstate`
+— ticked. Saving without noticing the box runs `forStorage`, which redacts an unticked id-like
+entry to `value: null, redacted: true`; `prefsHere()` then filters redacted entries out of
+replay. Nothing was ever written back. The loop closes on itself: a re-capture preserves the
+user's tick (correctly — the tick is theirs), so it redacts again, forever.
+
+### Why it is a coin toss and not a judgement
+
+The neighbouring key settles it. `yt-player-volume` holds `{"volume":35,"muted":false}` — the
+same wrapper, the same site, the same kind of preference — and it passed, **because it happens
+to contain no capital letter.** Whether a JSON preference was offered to the user pre-ticked
+came down to the casing of a field name. That is not a classifier being cautious; it is a
+classifier answering a question it was never able to answer.
+
+The rules it was answering with — base64-ish, long-mixed-case, over-200-chars — are all
+*opacity* tests. They are the right tests for a value with no structure to inspect. A value
+that parses as JSON is not opaque: its leaves are right there.
+
+### The fix
+
+`classify` now splits in two. `classifyScalar` holds the old rules, unchanged, for one opaque
+value. `classify` parses JSON first — including a JSON **string** nested inside a JSON field,
+which is exactly what a storage wrapper with expiry metadata produces — walks the leaves, and
+runs the scalar rules on each. Any id-like leaf flags the whole entry, and names the field it
+came from (`"sessionId" the name contains "id"`), which is more useful than the length verdict
+it replaced.
+
+Two details that decide whether it works:
+
+- **The bare-timestamp rule is dropped for leaves** (`inLeaf`). `^\d{10,}$` is sound on a whole
+  storage value and useless inside one: every wrapper of this shape carries a `creation` and an
+  `expiration`, so leaving it on would have re-flagged every single JSON preference on the web
+  and changed nothing. A numeric id inside a blob is still caught — by its field name, through
+  `ID_WORDS`, which is what catches `userId`, `visitorId`, `sessionId`.
+- **The walk is bounded** (`LEAF_MAX` 60, `LEAF_DEPTH` 6) and a walk that hits its bound returns
+  **idlike**, not ok. This is the line between *reviewed* and *vouched for*: the wrapper's own
+  length no longer condemns a value, so something else has to stop the panel pre-ticking a blob
+  nothing actually looked inside.
+
+Verified against every key measured live on YouTube plus a guard set of things that must stay
+unticked. `yt-player-quality`, `yt-player-volume`, `yt-player-caption-persistence` now arrive
+ticked; `yt-remote-device-id` (a UUID in `data`), `{"sessionId":…}`, `{"user":{"uuid":…}}`,
+Glean's `client_id` and an 80-field blob all stay unticked — several of which the *old*
+classifier caught only by the accident of being long enough.
+
+### The second complaint, and why it is the same bug wearing a different coat
+
+"It saves 540 or 1080 at random" has a much duller cause: the value **contains both numbers**.
+`{"quality":540,"previousQuality":1080}` was being rendered into a panel row styled
+`white-space: nowrap; text-overflow: ellipsis`, so which of the two numbers survived the clip
+depended on the key name's length and the panel's width. The row now wraps to four lines.
+
+A display that truncates a value in the middle is not a cosmetic problem when the value is the
+thing being decided about. **The review panel's job is to show the user what they are agreeing
+to; anything that shows them only part of it is the panel lying, quietly.**
+
+### The lesson
+
+**A heuristic that fires on the SHAPE of a value has to be told when the shape is a wrapper.**
+Every length-and-character-class rule in a classifier is a proxy for "I cannot see inside this."
+The moment you can see inside — and JSON is the case where you always can — the proxy is not
+conservative, it is just wrong, and it is wrong in the direction that silently disables the
+feature. Prefer being wrong in the direction the user can see: the panel shows every value it
+offers, so a missed flag is visible and a false flag is not.
+
+### Not changed, and why
+
+`replayStorage` still writes a storage key **only if it is absent** — the user's third report
+("remember 360p, set it higher, reload, and it comes back at the higher one") is that rule
+working correctly. A reload in the same container leaves the site's own newer value in place,
+which is what should happen. What was wrong is that the trace could not be used to tell that
+apart from a failure: it said `left 1 already there`. It now names the keys.
 
 ---
 

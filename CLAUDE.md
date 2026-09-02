@@ -1,6 +1,6 @@
 # Forget Me Not — project notes
 
-Violentmonkey userscript, **v0.14.0**. Single file, `Forget-Me-Not.user.js`, one IIFE,
+Violentmonkey userscript, **v0.15.0**. Single file, `Forget-Me-Not.user.js`, one IIFE,
 `@run-at document-start`, runs in every frame. The shared rules in `../CLAUDE.md` (version
 bumps, commit + push after every finished edit, no `innerHTML` in injected UI, the
 two-userscripts-fighting-over-a-click note) apply here too.
@@ -30,6 +30,7 @@ subject, so you can jump straight in:
 - **Capture: the baseline, the classifier, the review panel** → v0.12.0
 - **Replay, re-assertion, the loss watcher** → v0.13.0
 - **Wikipedia, and how to measure whether a site fights us** → v0.14.0
+- **The classifier, and judging a value's shape vs its contents** → v0.12.0, v0.15.0
 - **The GateSkip rename; the M0–M5 milestone log** → end of the document
 
 ---
@@ -221,6 +222,20 @@ gate on the landing page *and* an unrelated popup three pages deep.
   test is unusable: `id` is inside `sidebar`, `hidden`, `width`, `provider`. Value rules run
   before name rules, because "looks like a UUID" tells the user more than "the key is called
   clickId". It annotates and pre-decides; **it never blocks.**
+- **A value that parses as JSON is judged by its LEAVES, never by the wrapper's length or
+  character mix.** Every length-and-character-class rule is a proxy for "I cannot see inside
+  this", and JSON is the case where you always can. Measured, not theorised: `yt-player-quality`
+  is 104 chars with one capital `Q` in `previousQuality`, so "a long mixed-case token" flagged it
+  and the preference half silently did nothing on YouTube for as long as the user kept trying.
+  Its neighbour `yt-player-volume` passed **because it has no capital letter** — a coin toss, not
+  a judgement. Two rules keep the leaf walk honest: the bare-timestamp rule is **off** inside a
+  leaf (every wrapper carries a `creation`/`expiration`; a numeric id is caught by its field name
+  instead), and a walk that hits `LEAF_MAX`/`LEAF_DEPTH` returns **idlike**, because "reviewed"
+  and "vouched for" have to stay different answers.
+- **The review panel must show a value WHOLE.** Clipping `{"quality":540,"previousQuality":1080}`
+  to one ellipsised line makes which number the user sees depend on the key name's length. They
+  reported it as the wrong option being saved at random. A panel that shows part of what it is
+  asking you to agree to is lying quietly.
 - Values over `PREF_MAX_VALUE` (4096) are not offered at all, and are counted in the footer. That
   is the capture declining to carry a payload, not the classifier blocking a risky value.
 - **Storage entries are written only if the key is ABSENT.** A value still sitting there was not
