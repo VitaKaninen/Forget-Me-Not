@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        Forget Me Not
 // @namespace   https://github.com/VitaKaninen
-// @version     0.15.0
+// @version     0.16.0
 // @author      VitaKaninen
 // @description Teach it, once, which clicks dismiss a site's age gate, cookie wall or unwanted panel — then it remembers, and does that for you on every later visit. Nothing is guessed and nothing fires until you have taught it.
 // @match       *://*/*
@@ -83,9 +83,8 @@
     const MAX_RESTARTS = 2;           // re-runs allowed when the page replaces the gate
     const LOG_MAX = 120;
     const TRACE_MAX = 600;            // trace lines kept; a few page loads' worth
-    // Bump with @version. A trace file that does not say which build produced it is worth
-    // much less when it arrives days later.
-    const VERSION = '0.14.0';
+    // Read from the header so the two can't drift apart
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '?';
 
     // Rule shape:
     //   { host, subdomains, enabled, watchMs, steps: [Step], created, lastFired, fires }
@@ -2789,7 +2788,10 @@
             if (text) ioBox.select();
         }
 
-        panel.append(title, desc, globalRow, list, logWrap, io, foot);
+        const verLine = document.createElement('div');
+        verLine.textContent = 'v' + VERSION;
+        verLine.style.cssText = 'align-self: flex-end; color: #6c7086; font-size: 11px; margin-top: -6px;';
+        panel.append(title, desc, globalRow, list, logWrap, io, foot, verLine);
         overlay.appendChild(panel);
         overlay.addEventListener('click', (e) => { if (e.target === overlay) host.remove(); });
         root.appendChild(overlay);
