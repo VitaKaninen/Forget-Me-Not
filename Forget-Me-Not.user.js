@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        Forget Me Not
 // @namespace   https://github.com/VitaKaninen
-// @version     0.16.0
+// @version     0.17.0
 // @author      VitaKaninen
 // @description Teach it, once, which clicks dismiss a site's age gate, cookie wall or unwanted panel — then it remembers, and does that for you on every later visit. Nothing is guessed and nothing fires until you have taught it.
 // @match       *://*/*
@@ -9,6 +9,7 @@
 // @grant       GM_getValue
 // @grant       GM_deleteValue
 // @grant       GM_registerMenuCommand
+// @grant       GM_unregisterMenuCommand
 // @run-at      document-start
 // @updateURL   https://raw.githubusercontent.com/VitaKaninen/Forget-Me-Not/main/Forget-Me-Not.user.js
 // @downloadURL https://raw.githubusercontent.com/VitaKaninen/Forget-Me-Not/main/Forget-Me-Not.user.js
@@ -106,7 +107,8 @@
     const writeJson = (key, val) => { try { GM_setValue(key, JSON.stringify(val)); } catch (_) {} };
 
     const getRules = () => readJson(RULES_KEY, {});
-    const saveRules = (r) => writeJson(RULES_KEY, r);
+    const saveRules = (r) => { writeJson(RULES_KEY, r); buildMenu(); };
+    let menuIds = null;   // null until boot builds the menu; buildMenu is a no-op before that
     const isOn = () => GM_getValue(ON_KEY, true) !== false;
     const watchDefault = () => {
         const n = parseInt(GM_getValue(WATCH_KEY, WATCH_DEFAULT), 10);
@@ -2799,20 +2801,35 @@
     }
 
     // ---------------- Boot ----------------
+    // (Re)registers the menu; one site item that reads remember or forget by whether a rule covers this host
+    function buildMenu() {
+        if (menuIds === null) return;
+        if (typeof GM_unregisterMenuCommand === 'function') {
+            menuIds.forEach(id => { try { GM_unregisterMenuCommand(id); } catch (_) { /* gone already */ } });
+        }
+        menuIds = [];
+        const add = (label, fn, opts) => menuIds.push(GM_registerMenuCommand(label, fn, opts));
+        add('Forget Me Not: teach this page', startTeaching);
+        if (ruleForHost(location.hostname)) add('Forget Me Not: forget this site', forgetThisSite, { autoClose: false });
+        else add('Forget Me Not: remember this site', captureNow, { autoClose: false });
+        add('Forget Me Not: settings', openSettings);
+    }
+
+    // Deletes the rule covering this host
+    function forgetThisSite() {
+        const rules = getRules();
+        const hit = ruleForHost(location.hostname);
+        if (!hit) { toast('Forget Me Not: nothing taught for ' + location.hostname + '.'); buildMenu(); return; }
+        delete rules[hit.key];
+        saveRules(rules);
+        log('rule deleted for ' + hit.key);
+        disarm();
+        toast('Forget Me Not: forgot ' + hit.key + '.');
+    }
+
     if (isTop) {
-        GM_registerMenuCommand('Forget Me Not: teach this page', startTeaching);
-        GM_registerMenuCommand('Forget Me Not: remember this site', captureNow);
-        GM_registerMenuCommand('Forget Me Not: settings', openSettings);
-        GM_registerMenuCommand('Forget Me Not: forget this site', () => {
-            const rules = getRules();
-            const hit = ruleForHost(location.hostname);
-            if (!hit) { toast('Forget Me Not: nothing taught for ' + location.hostname + '.'); return; }
-            delete rules[hit.key];
-            saveRules(rules);
-            log('rule deleted for ' + hit.key);
-            disarm();
-            toast('Forget Me Not: forgot ' + hit.key + '.');
-        });
+        menuIds = [];
+        buildMenu();
     }
 
     const boot = () => {
