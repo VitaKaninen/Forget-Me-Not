@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        Forget Me Not
 // @namespace   https://github.com/VitaKaninen
-// @version     0.17.0
+// @version     0.18.0
 // @author      VitaKaninen
 // @description Teach it, once, which clicks dismiss a site's age gate, cookie wall or unwanted panel — then it remembers, and does that for you on every later visit. Nothing is guessed and nothing fires until you have taught it.
 // @match       *://*/*
@@ -1449,8 +1449,8 @@
         box.textContent = text;
         root.appendChild(box);
         document.documentElement.appendChild(host);
-        setTimeout(() => { box.style.opacity = '0'; }, 2600);
-        setTimeout(() => host.remove(), 3000);
+        setTimeout(() => { box.style.opacity = '0'; }, 3000);
+        setTimeout(() => host.remove(), 3300);
     }
 
     // ---------------- Shared UI bits ----------------
@@ -2810,8 +2810,8 @@
         menuIds = [];
         const add = (label, fn, opts) => menuIds.push(GM_registerMenuCommand(label, fn, opts));
         add('Forget Me Not: teach this page', startTeaching);
-        if (ruleForHost(location.hostname)) add('Forget Me Not: forget this site', forgetThisSite, { autoClose: false });
-        else add('Forget Me Not: remember this site', captureNow, { autoClose: false });
+        if (ruleForHost(location.hostname)) add('Forget Me Not: forget this site', forgetThisSite);
+        else add('Forget Me Not: remember this site', captureNow);
         add('Forget Me Not: settings', openSettings);
     }
 
